@@ -129,3 +129,19 @@ frontend/node_modules/.cache/default-development/0.pack
 
 # Uploaded user content (must never be committed)
 backend/uploads/
+
+# Dev / agent artifacts
+.emergent/
+*.patch
+*.diff.txt
+tmp_*
+test_rate_limit*
+test_reports/
+test_result.md
+memory/
+bench_outputs/
+backend/tools/
+backend/bench_*
+backend/tmp_*
+backend/audit_*
+
