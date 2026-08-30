@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "build"
+      }
+    },
+    {
+      "src": "backend/server.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "backend/server.py"
+    },
+    {
+      "src": "/(.*\\.map)$",
+      "status": 404
+    },
+    {
+      "src": "/(.*\\.(js|css|png|jpg|jpeg|svg|json|ico|txt|woff2|woff|eot|ttf))$",
+        "headers": {
+          "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+          "x-frame-options": "DENY",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "strict-origin-when-cross-origin",
+          "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://api.fontshare.com; connect-src 'self' https://scorelib-backend.onrender.com https://scorelib-backend-docker.onrender.com https://fonts.googleapis.com https://api.fontshare.com https://vercel.live https://*.vercel.app; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'self'"
+        },
+      "dest": "frontend/build/$1"
+    },
+    {
+      "src": "/(.*)",
+        "headers": {
+          "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+          "x-frame-options": "DENY",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "strict-origin-when-cross-origin",
+          "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://api.fontshare.com; connect-src 'self' https://scorelib-backend.onrender.com https://scorelib-backend-docker.onrender.com https://fonts.googleapis.com https://api.fontshare.com https://vercel.live https://*.vercel.app; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'self'"
+        },
+      "dest": "frontend/build/index.html"
+    }
+  ]
+}
