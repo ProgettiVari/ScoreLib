@@ -1,0 +1,617 @@
+@import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,500,700,400,900&f[]=satoshi@900,700,500,300,400&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 4%;
+    --primary: 0 0% 4%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 4%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 32%;
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 4%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 0 0% 4%;
+    --ink: 0 0% 4%;
+    --canvas: #FFFFFF;
+    --canvas2: #FAFAFA;
+    --canvas3: #F5F5F5;
+    --rule: #E5E5E5;
+    --muted2: #737373;
+    --muted3: #A3A3A3;
+    --radius: 0.375rem;
+  }
+  
+  html.dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 4%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 100%;
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 0 0% 100%;
+    --ink: 0 0% 100%;
+    --canvas: #1a1a1a;
+    --canvas2: #262626;
+    --canvas3: #2d2d2d;
+    --rule: #404040;
+    --muted2: #b3b3b3;
+    --muted3: #808080;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-canvas text-ink;
+    font-family: "Satoshi", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior-y: none;
+  }
+  ::selection { background: hsl(var(--foreground)); color: hsl(var(--background)); }
+  .tracking-tight,
+  .tracking-tighter,
+  .tracking-wide,
+  .tracking-wider,
+  .tracking-widest {
+    letter-spacing: 0 !important;
+  }
+}
+
+@layer components {
+  .font-display { font-family: "Cabinet Grotesk", ui-sans-serif, system-ui, sans-serif; }
+  .overline {
+    font-family: "JetBrains Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0;
+    font-size: 0.7rem;
+    color: hsl(var(--muted2));
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-3 font-medium rounded-md transition-all;
+    background: hsl(var(--ink));
+    color: hsl(var(--background));
+    box-shadow: 0 4px 0 0 rgba(0, 0, 0, 0.22);
+  }
+  .btn-primary:hover { transform: translateY(2px); box-shadow: 0 2px 0 0 rgba(0, 0, 0, 0.18); }
+  .btn-primary:active { transform: translateY(4px); box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.12); }
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-muted2 hover:text-ink transition-colors;
+  }
+  .btn-ghost-danger {
+    color: #b91c1c;
+    background: rgba(248, 113, 113, 0.15);
+  }
+  .btn-ghost-danger:hover {
+    background: rgba(248, 113, 113, 0.25);
+    color: #b91c1c;
+  }
+  html.dark .btn-ghost-danger {
+    color: #fecaca !important;
+    background: rgba(185, 28, 28, 0.16) !important;
+  }
+  html.dark .btn-ghost-danger:hover {
+    background: rgba(185, 28, 28, 0.3) !important;
+    color: #fecaca !important;
+  }
+  /* Force reset button color: black in light theme, amber in dark theme.
+     Also force svg/child fill+stroke to ensure icon follows color. */
+    /* Force reset button color: black in light theme, amber in dark theme.
+       Keep SVG as stroke-only (no fill) so icons remain outlined. */
+    .admin-reset-btn { color: #000000 !important; }
+    .admin-reset-btn svg,
+    .admin-reset-btn svg * {
+      stroke: #000000 !important;
+      fill: none !important;
+    }
+    /* In dark theme use the foreground variable (white) for text and SVG stroke */
+    html.dark .admin-reset-btn { color: hsl(var(--foreground)) !important; }
+    html.dark .admin-reset-btn svg,
+    html.dark .admin-reset-btn svg * {
+      stroke: hsl(var(--foreground)) !important;
+      fill: none !important;
+    }
+  .input-base {
+    @apply w-full bg-canvas2 border border-rule px-4 py-3 rounded-sm outline-none transition-colors text-ink;
+  }
+  .input-base:focus { border-color: hsl(var(--ink)); background: hsl(var(--canvas2)); }
+  .bg-overlay { background: rgba(0, 0, 0, 0.4); }
+  html.dark .bg-overlay { background: rgba(0, 0, 0, 0.65); }
+  html.dark .input-base { background-color: hsl(var(--canvas)); color: hsl(var(--foreground)); }
+  html.dark .input-base:focus { background-color: hsl(var(--canvas2)); border-color: hsl(var(--foreground)); }
+  html.dark .bg-white { background-color: var(--canvas2) !important; }
+  html.dark .bg-amber-50 { background-color: rgba(245, 158, 11, 0.12) !important; }
+  html.dark .bg-emerald-50 { background-color: rgba(16, 185, 129, 0.12) !important; }
+  html.dark .bg-red-100 { background-color: rgba(239, 68, 68, 0.12) !important; }
+  html.dark .text-ink,
+  html.dark .hover\:text-ink:hover,
+  html.dark .focus\:border-ink:focus,
+  html.dark .border-ink {
+    color: hsl(var(--foreground)) !important;
+    border-color: hsl(var(--foreground)) !important;
+  }
+  html.dark .btn-ghost { color: hsl(var(--muted2)) !important; }
+  html.dark .btn-ghost:hover { color: hsl(var(--foreground)) !important; }
+  /* Ensure primary buttons remain readable in dark mode */
+  html.dark .btn-primary {
+    background: hsl(var(--foreground)) !important;
+    color: hsl(var(--background)) !important;
+    box-shadow: 0 4px 0 0 rgba(0,0,0,0.18);
+  }
+  html.dark .overline { color: hsl(var(--muted2)); }
+  html.dark .viewer-toolbar,
+  html.dark .viewer-toolbar-controls,
+  html.dark .viewer-toolbar-controls--search,
+  html.dark .viewer-toolbar-group,
+  html.dark .viewer-toolbar-actions,
+  html.dark .viewer-toolbar-label,
+  html.dark .viewer-toolbar-meta,
+  html.dark .viewer-toolbar-divider,
+  html.dark .viewer-tool-btn,
+  html.dark .viewer-page-input,
+  html.dark .viewer-page-step {
+    background: var(--card) !important;
+    color: var(--foreground) !important;
+    border-color: var(--border) !important;
+  }
+  html.dark .viewer-toolbar-controls { background: hsl(var(--card)) !important; }
+  html.dark .viewer-toolbar-controls--search { background: hsl(var(--card)) !important; }
+  html.dark .viewer-toolbar-controls--search .viewer-toolbar-label,
+  html.dark .viewer-toolbar-controls--search .viewer-toolbar-meta {
+    color: var(--foreground) !important;
+  }
+  html.dark .viewer-tool-btn { background: var(--popover) !important; color: var(--foreground) !important; }
+  html.dark .viewer-page-input,
+  html.dark .viewer-page-step { background: var(--card) !important; color: var(--foreground) !important; border-color: var(--foreground) !important; }
+  .piano-bars {
+    background-image: repeating-linear-gradient(90deg, #0A0A0A 0 4px, transparent 4px 14px);
+  }
+  .text-mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  mark.hl,
+  span.hl {
+    background: transparent;
+    color: inherit;
+    /* Add a small horizontal padding to keep highlighted fragments visually separated
+       and avoid background overlap when adjacent lines are both highlighted. */
+    padding: 0 0.15em;
+    margin: 0;
+    /* Slight rounding so adjacent highlights don't appear glued across line breaks */
+    border-radius: 0.125rem;
+    box-shadow: none;
+    outline: none;
+    transition: background 100ms ease;
+    /* keep display inline to avoid changing text wrapping; inherit line-height to preserve layout */
+    display: inline;
+    line-height: inherit;
+    vertical-align: baseline;
+    pointer-events: none;
+  }
+  html.dark mark.hl,
+  html.dark span.hl {
+    background: transparent;
+    color: inherit;
+  }
+  mark.hl.hl-active,
+  span.hl.hl-active {
+    background: rgba(245, 158, 11, 0.35);
+    color: inherit;
+    box-shadow: none;
+  }
+  html.dark mark.hl.hl-active,
+  html.dark span.hl.hl-active {
+    background: rgba(245, 158, 11, 0.35);
+    color: inherit;
+  }
+  @keyframes hl-pulse {
+    0%, 100% { outline-width: 2px; }
+    50% { outline-width: 3px; }
+  }
+  /* When highlights are hidden, render mark as plain text without losing layout */
+  .hl-off mark.hl,
+  .hl-off mark.hl.hl-active,
+  .hl-off span.hl,
+  .hl-off span.hl.hl-active {
+    background: transparent !important;
+    color: inherit !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+
+  .viewer-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    background-color: hsl(var(--card));
+    border-bottom: 1px solid hsl(var(--rule));
+    backdrop-filter: blur(12px);
+    backface-visibility: hidden;
+  }
+  html.dark .viewer-toolbar {
+    background-color: var(--canvas);
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+  .viewer-toolbar-header,
+  .viewer-toolbar-controls {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .viewer-toolbar-header {
+    border-bottom: 1px solid hsl(var(--rule));
+    background-color: hsl(var(--card));
+    color: hsl(var(--foreground));
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+  .viewer-toolbar-title {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  @media (max-width: 640px) {
+    .viewer-toolbar-group--page {
+      width: 100%;
+      justify-content: center;
+    }
+    .viewer-toolbar-actions {
+      width: 100%;
+      justify-content: flex-end;
+    }
+  }
+  html.dark .viewer-toolbar-header {
+    background-color: var(--canvas);
+    color: hsl(var(--foreground));
+    border-bottom-color: rgba(255, 255, 255, 0.12);
+  }
+  html.dark .viewer-toolbar-header .btn-ghost {
+    color: hsl(var(--muted2));
+  }
+  html.dark .viewer-toolbar-header .btn-ghost:hover {
+    color: hsl(var(--foreground));
+  }
+  .viewer-toolbar-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.625rem 0.75rem 0.75rem;
+    background: hsl(var(--card));
+    overflow-x: hidden;
+  }
+
+  /* Light theme: give toolbar sections a subtle border and lift so they don't blend with PDF content */
+  .viewer-toolbar-header,
+  .viewer-toolbar-controls,
+  .viewer-toolbar-controls--search {
+    border-bottom: 1px solid hsl(var(--rule));
+    box-shadow: 0 1px 0 rgba(15,23,42,0.03);
+    background: hsl(var(--card));
+  }
+  .viewer-toolbar-controls--search {
+    background: hsl(var(--card));
+    border-top: none;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    width: 100%;
+    padding: 0.625rem 0.75rem 0.75rem;
+    box-sizing: border-box;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-group--page,
+  .viewer-toolbar-controls--search .viewer-toolbar-group--search {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-group--search {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.5rem 0.75rem;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-label,
+  .viewer-toolbar-controls--search .viewer-toolbar-meta,
+  .viewer-toolbar-controls--search .viewer-search-query {
+    color: hsl(var(--foreground));
+  }
+  .viewer-toolbar-controls--search .viewer-search-query {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--canvas3));
+    border-radius: 999px;
+    font-size: 0.85rem;
+    line-height: 1;
+    color: hsl(var(--foreground));
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  html.dark .viewer-toolbar-controls--search .viewer-search-query {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  @media (min-width: 640px) {
+    .viewer-toolbar-controls {
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+  }
+  @media (min-width: 768px) {
+    .viewer-toolbar-controls {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+  .viewer-toolbar-group--page {
+    flex: 0 1 auto;
+  }
+  .viewer-toolbar-controls--search {
+    background: hsl(var(--card));
+    border-top: 1px solid hsl(var(--accent) / 0.4);
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-label,
+  .viewer-toolbar-controls--search .viewer-toolbar-meta,
+  .viewer-toolbar-controls--search .viewer-search-query {
+    color: hsl(var(--foreground));
+  }
+  .viewer-toolbar-controls--search .viewer-tool-btn {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--border));
+  }
+  .viewer-toolbar-controls--search .viewer-tool-btn:hover:not(:disabled) {
+    background: hsl(var(--canvas3));
+  }
+  .viewer-toolbar-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.625rem;
+    user-select: none;
+  }
+  .viewer-toolbar-group--search {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .viewer-toolbar-label {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: hsl(var(--muted2));
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-label {
+    color: hsl(var(--foreground));
+  }
+  .viewer-toolbar-meta {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    white-space: nowrap;
+  }
+  .viewer-toolbar-controls--search .viewer-toolbar-meta {
+    color: hsl(var(--foreground));
+  }
+  /* Divider: always show a thin rule between toolbar sections
+     Use accent tint in light theme and a subtle white line in dark theme */
+  .viewer-toolbar-divider {
+    width: 100%;
+    height: 1px;
+    align-self: stretch;
+    background: hsl(var(--accent) / 0.5);
+    flex-shrink: 0;
+  }
+
+  html.dark .viewer-toolbar-divider {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* Ensure the toolbar controls always show a subtle top rule in dark mode */
+  html.dark .viewer-toolbar-controls {
+    border-top: 1px solid rgba(255,255,255,0.08) !important;
+  }
+
+  /* Force Manage Library button to white background + black text in dark mode */
+  .library-manage-btn {
+    background: var(--canvas2);
+  }
+  /* Light theme: default light background, dark text; hover -> dark bg, light text */
+  html:not(.dark) .library-manage-btn {
+    background-color: rgb(250, 250, 250) !important;
+    color: rgb(10, 10, 10) !important;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  html:not(.dark) .library-manage-btn:hover {
+    background-color: rgb(10, 10, 10) !important;
+    color: rgb(250, 250, 250) !important;
+  }
+  html:not(.dark) .library-manage-btn svg { color: inherit !important; }
+
+  /* Dark theme: inverted behavior — default dark bg, light text; hover -> light bg, dark text */
+  html.dark .library-manage-btn {
+    background-color: rgb(10, 10, 10) !important;
+    color: rgb(250, 250, 250) !important;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  html.dark .library-manage-btn:hover {
+    background-color: rgb(250, 250, 250) !important;
+    color: rgb(10, 10, 10) !important;
+  }
+  html.dark .library-manage-btn svg { color: inherit !important; }
+  .viewer-search-query {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .viewer-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-left: auto;
+  }
+  .viewer-tool-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    border: 1px solid hsl(var(--rule));
+    background: hsl(var(--card));
+    color: hsl(var(--foreground));
+  }
+  .viewer-toolbar-controls--search .viewer-tool-btn {
+    border-color: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+  .viewer-tool-btn:hover:not(:disabled) {
+    background: hsl(var(--canvas3));
+  }
+  .viewer-toolbar-controls--search .viewer-tool-btn:hover:not(:disabled) {
+    background: hsl(var(--canvas3));
+  }
+  .viewer-tool-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .viewer-tool-btn--clear {
+    font-size: 1.125rem;
+    line-height: 1;
+    font-weight: 600;
+  }
+  .viewer-page-input {
+    width: 4.5rem;
+    min-height: 2.25rem;
+    padding: 0.375rem 0.5rem;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.25;
+    text-align: center;
+    color: hsl(var(--foreground));
+    background: hsl(var(--card));
+    border: 2px solid hsl(var(--foreground));
+    border-radius: 0.25rem;
+    outline: none;
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .viewer-page-input::-webkit-outer-spin-button,
+  .viewer-page-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .viewer-page-input:focus {
+    box-shadow: 0 0 0 2px hsl(var(--accent));
+  }
+  .viewer-page-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    background: hsl(var(--card));
+    border: 2px solid hsl(var(--foreground));
+    border-radius: 0.25rem;
+  }
+  .viewer-page-step:hover:not(:disabled) {
+    background: hsl(var(--canvas3));
+  }
+  .viewer-page-step:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  @supports (padding: max(0px)) {
+    .safe-bottom {
+      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+  }
+  
+  /* Dark mode file list styling - darker hover backgrounds */
+  html.dark li.group:hover {
+    background-color: rgba(0, 0, 0, 0.5) !important;
+  }
+  html.dark li.group {
+    background-color: transparent;
+  }
+
+  /* Ensure account-approval notice is visible in both themes
+     The markup uses inline styles which would otherwise override CSS;
+     use high-specificity selectors with !important to guarantee contrast.
+  */
+  /* Light theme: make the notice visibly marked but subtle — inverted from dark theme
+     Use a faint dark tint panel on the light canvas so it reads as the 'opposite' of dark.
+  */
+  html:not(.dark) p.text-sm.rounded-md.p-3.mt-4 {
+    background: rgba(15,23,42,0.06) !important;
+    color: rgb(10,10,10) !important;
+    border-color: rgba(15,23,42,0.12) !important;
+    box-shadow: 0 2px 6px rgba(15,23,42,0.06) !important;
+    backdrop-filter: none !important;
+  }
+
+  /* Dark theme: keep the stronger dark-card appearance but slightly increased depth */
+  html.dark p.text-sm.rounded-md.p-3.mt-4 {
+    background: hsl(var(--card)) !important;
+    color: hsl(var(--foreground)) !important;
+    border-color: rgba(255,255,255,0.10) !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.22) !important;
+  }
+}
