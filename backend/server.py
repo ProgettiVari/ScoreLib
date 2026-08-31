@@ -30,6 +30,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 import httpx
 import smtplib
+import fitz
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from urllib.parse import quote
@@ -134,6 +135,7 @@ async def lifespan(app: FastAPI):
     )
     for _j in stuck_jobs:
         safe_create_task(process_pdf_job(_j["id"]))
+    await _resume_waiting_gemini_jobs()
     yield
 
 ENABLE_DOCS = os.environ.get("ENABLE_DOCS", "0") == "1"
@@ -1998,6 +2000,75 @@ async def master_drive_disconnect(_: str = Depends(require_admin)):
     await db.config.delete_one({"key": "master_drive"})
     return {"ok": True}
 
+def _job_waiting_for_gemini_quota_status() -> str:
+    return "waiting_for_gemini_quota"
+
+
+def _gemini_quota_resume_ranges(total_pages: int, quota_page: Optional[int] = None, completed_pages: Optional[List[int]] = None, pending_pages: Optional[List[int]] = None) -> Tuple[List[int], List[int]]:
+    total_pages = max(0, int(total_pages or 0))
+    if pending_pages is not None:
+        pending = sorted({int(page) for page in pending_pages if 1 <= int(page) <= total_pages})
+    elif quota_page is not None:
+        quota_page = max(1, min(int(quota_page), total_pages)) if total_pages else 0
+        pending = list(range(quota_page, total_pages + 1)) if total_pages else []
+    else:
+        pending = list(range(1, total_pages + 1))
+
+    if completed_pages is not None:
+        completed = sorted({int(page) for page in completed_pages if 1 <= int(page) <= total_pages})
+    else:
+        completed = []
+
+    if not completed and quota_page is not None and total_pages:
+        quota_page = max(1, min(int(quota_page), total_pages))
+        completed = list(range(1, quota_page))
+    if pending and not completed:
+        completed = [page for page in range(1, total_pages + 1) if page not in pending]
+    if pending and completed:
+        pending = sorted({page for page in pending if page not in completed})
+        completed = sorted({page for page in completed if 1 <= page <= total_pages})
+    if not pending and total_pages:
+        completed = list(range(1, total_pages + 1))
+    return completed, pending
+
+
+async def _mark_job_waiting_for_gemini_quota(job_id: str, *, pdf_id: Optional[str], page_num: Optional[int], retry_after: Optional[float], pending_pages: Optional[List[int]] = None, completed_pages: Optional[List[int]] = None, model: Optional[str] = None, reason: str = "quota_exhausted") -> None:
+    if not job_id:
+        return
+    payload = {
+        "status": _job_waiting_for_gemini_quota_status(),
+        "gemini_quota_waiting": True,
+        "gemini_quota_waiting_since": iso_now(),
+        "gemini_retry_after_seconds": retry_after,
+        "gemini_model": model or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
+        "gemini_quota_reason": reason,
+        "updated_at": iso_now(),
+    }
+    if pdf_id is not None:
+        payload["pdf_id"] = pdf_id
+    if page_num is not None:
+        payload["gemini_quota_page"] = int(page_num)
+    if pending_pages is not None:
+        payload["gemini_pending_pages"] = pending_pages
+    if completed_pages is not None:
+        payload["gemini_completed_pages"] = completed_pages
+    await db.upload_jobs.update_one({"id": job_id}, {"$set": payload}, upsert=True)
+
+
+async def _resume_waiting_gemini_jobs() -> None:
+    pending_jobs = await db.upload_jobs.find({
+        "status": _job_waiting_for_gemini_quota_status(),
+    }).to_list(1000)
+    for j in pending_jobs:
+        safe_create_task(process_pdf_job(j["id"]))
+
+
+async def _set_job_status(job_id: str, status: str, **extra) -> None:
+    patch = {"status": status, "updated_at": iso_now()}
+    patch.update(extra)
+    await db.upload_jobs.update_one({"id": job_id}, {"$set": patch}, upsert=True)
+
+
 @api.post("/admin/reset-today")
 async def reset_today_data(payload: dict, user_id: str = Depends(require_admin)):
     if not ADMIN_RESET_PASSWORD:
@@ -2072,35 +2143,91 @@ def _extract_pages_sync(
 async def process_pdf_job(job_id):
     job = await db.upload_jobs.find_one({"id": job_id})
     if not job: return
-    await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "processing"}})
+
+    if job.get("status") == _job_waiting_for_gemini_quota_status():
+        logger.info("Gemini quota wait job resumed job_id=%s pdf_id=%s", job_id, job.get("pdf_id"))
+
+    await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "processing", "updated_at": iso_now()}})
     try:
         pdf = await db.pdfs.find_one({"id": job["pdf_id"]})
         fpath = Path(pdf["file_path"])
         if fpath.exists():
-            # Run OCR in thread pool to avoid blocking event loop
             pdf_bytes = fpath.read_bytes()
+            resume_completed_pages = job.get("gemini_completed_pages") or []
+            resume_pending_pages = job.get("gemini_pending_pages") or []
+            resume_quota_page = job.get("gemini_quota_page")
+            original_total = fitz.open(fpath).page_count if fpath.exists() else 0
+            completed_pages, pending_pages = _gemini_quota_resume_ranges(
+                total_pages=original_total,
+                quota_page=resume_quota_page,
+                completed_pages=resume_completed_pages,
+                pending_pages=resume_pending_pages,
+            )
+            active_page_numbers = pending_pages if pending_pages else None
+            active_pdf_bytes = pdf_bytes
+            if active_page_numbers:
+                with fitz.open(fpath) as doc:
+                    subset = fitz.open()
+                    for page_num in active_page_numbers:
+                        page_index = max(0, min(page_num - 1, doc.page_count - 1))
+                        subset.insert_pdf(doc, from_page=page_index, to_page=page_index)
+                    active_pdf_bytes = subset.tobytes()
+                    subset.close()
             known_page_records = await db.pdf_pages.find(
                 {"text": {"$ne": ""}, "visual_signature": {"$exists": True}},
                 {"_id": 0, "text": 1, "visual_signature": 1},
             ).limit(400).to_list(400)
             known_page_texts = [page.get("text", "") for page in known_page_records if page.get("text")]
             logger.info(
-                "VISUAL_REUSE_CANDIDATES pdf=%s loaded=%d texts=%d",
+                "VISUAL_REUSE_CANDIDATES pdf=%s loaded=%d texts=%d resume_pages=%s",
                 pdf["id"],
                 len(known_page_records),
                 len(known_page_texts),
+                active_page_numbers,
             )
             timings: Dict[str, Any] = {"page_details": []}
             pages_text, raw_texts, total, used_ocr, page_labels = await asyncio.to_thread(
                 _extract_pages_sync,
-                pdf_bytes,
+                active_pdf_bytes,
                 known_page_texts,
                 known_page_records,
                 timings,
             )
-            logger.info(f"PDF extraction for {pdf['id']}: {total} pages, OCR used: {used_ocr}")
-            
-            # Batch update pages in parallel for faster indexing
+            if active_page_numbers:
+                page_map = active_page_numbers
+            else:
+                page_map = list(range(1, total + 1))
+            logger.info(f"PDF extraction for {pdf['id']}: {total} pages, OCR used: {used_ocr}, resume_pending={pending_pages}")
+            if timings.get("gemini_quota_waiting"):
+                quota_page = timings.get("gemini_quota_page")
+                completed_pages, pending_pages = _gemini_quota_resume_ranges(
+                    total_pages=total,
+                    quota_page=quota_page,
+                    completed_pages=completed_pages,
+                    pending_pages=pending_pages,
+                )
+                scatter = {
+                    "status": _job_waiting_for_gemini_quota_status(),
+                    "gemini_quota_waiting": True,
+                    "gemini_quota_waiting_since": iso_now(),
+                    "gemini_retry_after_seconds": timings.get("gemini_quota_retry_after"),
+                    "gemini_model": os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
+                    "gemini_pending_pages": pending_pages,
+                    "gemini_completed_pages": completed_pages,
+                    "gemini_quota_page": quota_page,
+                    "updated_at": iso_now(),
+                    "error": "Gemini quota exhausted; waiting for quota reset",
+                    "logger": "Gemini quota exhausted",
+                }
+                logger.warning(
+                    "Gemini quota exhausted document_id=%s pending_pages=%s completed_pages=%s status=%s",
+                    pdf["id"],
+                    pending_pages,
+                    completed_pages,
+                    _job_waiting_for_gemini_quota_status(),
+                )
+                await db.upload_jobs.update_one({"id": job_id}, {"$set": scatter})
+                return
             page_details = timings.get("page_details", [])
             logger.info(
                 "VISUAL_REUSE_RESULT pdf=%s pages=%d used_ocr=%s",
@@ -2111,17 +2238,20 @@ async def process_pdf_job(job_id):
 
             tasks = []
             for i, txt in enumerate(pages_text):
+                page_num = page_map[i]
+                if page_num in completed_pages:
+                    continue
                 raw = raw_texts[i] if i < len(raw_texts) else ""
                 normalized = normalize_pdf_text(txt)
                 metadata = extract_page_metadata(normalized)
-                logger.info(f"  Page {i+1}: {len(txt)} chars, preview: {txt[:80] if txt else '(empty)'}")
+                logger.info(f"  Page {page_num}: {len(txt)} chars, preview: {txt[:80] if txt else '(empty)'}")
                 content_signature = build_content_signature(txt)
                 visual_signature = page_details[i].get("visual_signature") if i < len(page_details) else None
                 if i < len(page_details):
                     logger.info(
                         "VISUAL_REUSE_PAGE pdf=%s page=%d reason=%s reused_source=%s score=%s visual=%s",
                         pdf["id"],
-                        i + 1,
+                        page_num,
                         page_details[i].get("reason"),
                         page_details[i].get("reused_text_source"),
                         page_details[i].get("reused_text_similarity"),
@@ -2135,23 +2265,20 @@ async def process_pdf_job(job_id):
                     "page_label": page_labels[i],
                     "content_signature": content_signature,
                     "visual_signature": visual_signature,
+                    "ocr_provider": page_details[i].get("ocr_provider", "native") if i < len(page_details) else "native",
                     **metadata,
                 }
                 tasks.append(
                     db.pdf_pages.update_one(
-                        {"pdf_id": pdf["id"], "page": i+1},
+                        {"pdf_id": pdf["id"], "page": page_num},
                         {"$set": update_doc},
                         upsert=True,
                     )
                 )
-            # Execute all page updates concurrently
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            
             logger.info(f"PDF {pdf['id']} indexing complete")
             await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "ready", "pages": total, "page_labels": page_labels}})
-            
-            # Background Drive backup (fire-and-forget) to not block completion
             async def backup_drive():
                 try:
                     master = await get_master_drive()
@@ -2179,9 +2306,7 @@ async def process_pdf_job(job_id):
                 except Exception as e:
                     await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"drive_backup_error": str(e)}})
                     await log_event("pdf.drive_error", f"Drive backup fallito: {e}", user_id=pdf.get("owner_id"), level="error", meta={"pdf_id": pdf["id"], "stage": "drive_backup"})
-            
-            # Start background backup and mark job complete immediately
             safe_create_task(backup_drive())
-            await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "completed"}})
+            await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "completed", "updated_at": iso_now()}})
     except Exception as e:
-        await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e)}})
+        await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e), "updated_at": iso_now()}})

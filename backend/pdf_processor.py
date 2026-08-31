@@ -14,6 +14,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
@@ -33,8 +34,26 @@ FAST_OCR_WORD_THRESHOLD = int(os.environ.get("OCR_FAST_WORD_THRESHOLD", "8"))
 VISUAL_SIGNATURE_DPI = int(os.environ.get("OCR_VISUAL_SIGNATURE_DPI", "48"))
 VISUAL_SIGNATURE_GRID = int(os.environ.get("OCR_VISUAL_SIGNATURE_GRID", "16"))
 VISUAL_REUSE_SIMILARITY_THRESHOLD = float(os.environ.get("OCR_VISUAL_REUSE_THRESHOLD", "0.96"))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_BATCH_SIZE = max(1, int(os.environ.get("GEMINI_BATCH_SIZE", "4")))
+GEMINI_MAX_RETRIES = max(0, int(os.environ.get("GEMINI_MAX_RETRIES", "2")))
+GEMINI_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_REQUEST_TIMEOUT_SECONDS", "120"))
+GEMINI_MAX_CONCURRENCY = max(1, int(os.environ.get("GEMINI_MAX_CONCURRENCY", "2")))
 _timing_lock = threading.Lock()
 _ocr_context = threading.local()
+_gemini_concurrency_semaphore = threading.Semaphore(GEMINI_MAX_CONCURRENCY)
+
+
+class GeminiQuotaExceeded(RuntimeError):
+    """Raised when Gemini returns a daily quota exhaustion signal instead of a temporary rate-limit retry."""
+
+    def __init__(self, page_num: Optional[int] = None, retry_after: Optional[float] = None, reason: str = "quota_exceeded", message: str = "Gemini quota exhausted"):
+        super().__init__(message)
+        self.page_num = page_num
+        self.retry_after = retry_after
+        self.reason = reason
+        self.message = message
 
 
 def _is_image_ocr_mode() -> bool:
@@ -1113,6 +1132,268 @@ def _find_tesseract_binary() -> str:
     )
     return ""
 
+def _gemini_is_configured() -> bool:
+    return bool(GEMINI_API_KEY)
+
+
+def _render_page_for_gemini(page) -> Optional[bytes]:
+    try:
+        pix = page.get_pixmap(dpi=int(os.environ.get("GEMINI_OCR_DPI", "220")))
+        if not getattr(pix, "samples", None):
+            return None
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except Exception as exc:
+        logger.warning("Gemini page rasterization failed: %s", exc)
+        return None
+
+
+def _extract_retry_after(headers: Dict[str, str]) -> Optional[float]:
+    """Extract Retry-After header value in seconds. Handles both delta-seconds and HTTP-date formats."""
+    header = headers.get("Retry-After") if isinstance(headers, dict) else None
+    if not header:
+        return None
+    try:
+        # Try parsing as integer (delta-seconds)
+        return max(float(header), 0.0)
+    except ValueError:
+        try:
+            # Try parsing as HTTP date
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(str(header))
+            if dt is None:
+                return None
+            delta = (dt - datetime.now(timezone.utc)).total_seconds()
+            return max(delta, 0.0)
+        except Exception:
+            logger.debug("Failed to parse Retry-After header: %s", header)
+            return None
+
+
+def _is_gemini_daily_quota_error(response) -> bool:
+    if response is None:
+        return False
+    text = str(getattr(response, "text", "") or "")
+    lower = text.lower()
+    if "quota exceeded" not in lower and "quota" not in lower:
+        return False
+    return (
+        "metric" in lower
+        or "limit" in lower
+        or "free_tier" in lower
+        or "generate_content_free_tier_requests" in lower
+        or "daily" in lower
+    )
+
+
+def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
+    """OCR a single page via Gemini only after local OCR attempts are insufficient.
+    
+    Handles music sheet OCR with proper error categorization and quota management.
+    Uses concurrency semaphore to respect GEMINI_MAX_CONCURRENCY limit.
+    Returns plain text (no JSON parsing from response).
+    """
+    if not _gemini_is_configured():
+        return ""
+
+    image_bytes = _render_page_for_gemini(page)
+    if not image_bytes:
+        return ""
+
+    expected_page = (int(page_num) + 1) if page_num is not None else 1
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+    
+    # Prompt optimized for music sheet OCR: preserve structure, accordi, titles, etc.
+    prompt = (
+        "Trascrivi fedelmente il testo della pagina di spartito musicale. "
+        "MANTIENI: titolo brano, testo, accordi (inclusi con basso, ad es. RE/Fa#), "
+        "accordi con estensioni, numeri, strofe, ritornelli, bridge, intro, outro, "
+        "indicazioni (x2, D.C., ecc.), annotazioni leggibili, testo scritto a mano leggibile. "
+        "NON riassumere, NON correggere, NON inventare. "
+        "Se qualcosa non è leggibile, scrivi [ILLEGIBILE] instead of guessing. "
+        "Ritorna SOLO il testo OCR, niente JSON, niente formattazione extra."
+    )
+    
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}},
+            ]
+        }],
+    }
+
+    quota_exhausted = False
+    for attempt in range(1, GEMINI_MAX_RETRIES + 2):
+        start = time.perf_counter()        
+        # Respect concurrency limit
+        acquired = _gemini_concurrency_semaphore.acquire(timeout=10.0)
+        if not acquired:
+            logger.warning("Gemini concurrency semaphore timeout for page %s", expected_page)
+            return ""
+        
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=GEMINI_REQUEST_TIMEOUT_SECONDS)
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            
+            # Categorize response status
+            if response.status_code == 429:
+                retry_after = _extract_retry_after(dict(response.headers))
+                response_text = (response.text or "")[:1000]
+                daily_quota = _is_gemini_daily_quota_error(response)
+                logger.warning(
+                    "Gemini rate-limited (429) for page %s, attempt %d/%d daily_quota=%s retry_after=%s",
+                    expected_page, attempt, GEMINI_MAX_RETRIES + 1, daily_quota, retry_after,
+                )
+                if daily_quota:
+                    logger.error(
+                        "Gemini quota exhausted for page %s: %s",
+                        expected_page,
+                        response_text,
+                    )
+                    if timings is not None:
+                        timings["gemini_quota_waiting"] = True
+                        timings["gemini_quota_page"] = page_num
+                        timings["gemini_quota_retry_after"] = retry_after
+                        timings["gemini_quota_reason"] = "daily_quota"
+                    raise GeminiQuotaExceeded(
+                        page_num=page_num,
+                        retry_after=retry_after,
+                        reason="daily_quota",
+                        message=response_text or "Gemini quota exceeded",
+                    )
+                if retry_after is not None:
+                    if timings is not None:
+                        _record_timing(timings, "gemini_retry_after_seconds", retry_after)
+                    logger.warning("Gemini quota retry-after: %.1fs (respecting full duration)", retry_after)
+                    if attempt <= GEMINI_MAX_RETRIES:
+                        time.sleep(retry_after)
+                        continue
+                quota_exhausted = True
+                logger.warning("Gemini quota exhausted for page %s (exceeded retry budget)", expected_page)
+                return ""
+            
+            if response.status_code in {400, 401, 403}:
+                # Client error: invalid request or auth
+                logger.warning(
+                    "Gemini client error (status=%s) for page %s: %s",
+                    response.status_code, expected_page, response.text[:200]
+                )
+                return ""
+            
+            if response.status_code == 404:
+                # Model not found or deprecated
+                logger.error(
+                    "Gemini model not found (404): %s. Verify GEMINI_MODEL=%s is available.",
+                    response.text[:200], GEMINI_MODEL
+                )
+                return ""
+            
+            if response.status_code in {500, 503}:
+                # Transient server error: retry with backoff
+                if attempt <= GEMINI_MAX_RETRIES:
+                    sleep_for = min(20.0, 2 ** (attempt - 1) * 1.5)
+                    logger.warning(
+                        "Gemini transient error (status=%s) for page %s, retrying in %.1fs",
+                        response.status_code, expected_page, sleep_for
+                    )
+                    time.sleep(sleep_for)
+                    continue
+                logger.warning(
+                    "Gemini exceeded retry budget after %d attempts for page %s",
+                    attempt, expected_page
+                )
+                return ""
+            
+            if response.status_code >= 500:
+                # Other 5xx: don't retry, quota likely exhausted
+                logger.warning(
+                    "Gemini server error (status=%s) for page %s",
+                    response.status_code, expected_page
+                )
+                return ""
+            
+            # Success: extract text from response
+            response.raise_for_status()
+            data = response.json()
+            contents = data.get("candidates", [])
+            
+            if not contents or not isinstance(contents, list):
+                logger.warning("Gemini returned empty candidates for page %s", expected_page)
+                return ""
+            
+            # Extract text from first candidate
+            candidate_text = ""
+            for candidate in contents:
+                parts = candidate.get("content", {}).get("parts", [])
+                for part in parts:
+                    text = part.get("text")
+                    if text:
+                        candidate_text = text
+                        break
+                if candidate_text:
+                    break
+            
+            if not candidate_text:
+                logger.warning("Gemini returned no text content for page %s", expected_page)
+                return ""
+            
+            # Validate response is usable
+            cleaned = candidate_text.strip()
+            if not cleaned:
+                logger.warning("Gemini response empty after stripping for page %s", expected_page)
+                return ""
+            
+            if timings is not None:
+                _record_timing(timings, "gemini_ms", elapsed_ms)
+                _record_timing(timings, "gemini_attempt", attempt)
+            
+            logger.info("Gemini OCR succeeded for page %s in %.0f ms", expected_page, elapsed_ms)
+            return cleaned
+        
+        except GeminiQuotaExceeded:
+            raise
+
+        except httpx.TimeoutException:
+            logger.warning(
+                "Gemini request timeout for page %s (timeout=%.0fs), attempt %d/%d",
+                expected_page, GEMINI_REQUEST_TIMEOUT_SECONDS, attempt, GEMINI_MAX_RETRIES + 1
+            )
+            if attempt <= GEMINI_MAX_RETRIES:
+                sleep_for = min(15.0, 2 ** (attempt - 1) * 1.0)
+                time.sleep(sleep_for)
+                continue
+            return ""
+        
+        except Exception as exc:
+            logger.warning(
+                "Gemini OCR exception for page %s: %s (type=%s), attempt %d/%d",
+                expected_page, exc, type(exc).__name__, attempt, GEMINI_MAX_RETRIES + 1
+            )
+            if attempt <= GEMINI_MAX_RETRIES:
+                sleep_for = min(15.0, 2 ** (attempt - 1) * 1.0)
+                time.sleep(sleep_for)
+                continue
+            return ""
+        
+        finally:
+            _gemini_concurrency_semaphore.release()
+
+    if quota_exhausted:
+        logger.error("Gemini quota exhausted for page %s; further OCR requests will fail", expected_page)
+    return ""
+
+
 def _create_rapidocr_engine():
     global _rapidocr_engine
     global _rapidocr_available
@@ -1512,39 +1793,111 @@ def _ocr_page_sync(page, timings: Dict[str, Any] = None) -> str:
     return _ocr_page_text(page, timings=timings, page_num=None)
 
 
-def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
-    """Module-level OCR wrapper used by workers.
+def needs_fallback_ocr(raw_text: str, *, min_tokens: int = 3, min_alpha_ratio: float = 0.55, max_symbol_share: float = 0.22) -> bool:
+    """Return True when OCR text is too sparse or noisy to trust as-is."""
+    if raw_text is None:
+        return True
 
-    Tries direct OCR on a single embedded page image first, then falls back to
-    Tesseract raster OCR, and only then to RapidOCR as a last resort.
-    """
+    text = " ".join(str(raw_text).split())
+    if not text:
+        return True
+
+    tokens = [token for token in text.split() if token]
+    if not tokens:
+        return True
+
+    if len(tokens) == 1:
+        return True
+
+    alpha_chars = sum(1 for ch in text if ch.isalpha())
+    non_space_chars = sum(1 for ch in text if not ch.isspace())
+    alpha_ratio = alpha_chars / max(1, non_space_chars)
+
+    symbols = sum(1 for ch in text if not ch.isalnum() and not ch.isspace())
+    symbol_share = symbols / max(1, len(text))
+
+    if len(tokens) < min_tokens:
+        return True
+
+    short_count = sum(1 for token in tokens if len(re.sub(r"[^A-Za-zÀ-ÿ0-9]", "", token)) <= 2)
+    short_share = short_count / len(tokens)
+
+    if symbol_share > max_symbol_share and short_share > 0.35:
+        return True
+
+    if alpha_ratio < min_alpha_ratio:
+        return True
+
+    return False
+
+
+def _sufficient_ocr_text(text: str, min_words: int = FAST_OCR_WORD_THRESHOLD) -> bool:
+    """Determine if OCR result is sufficient for music sheet OCR."""
+    if not text:
+        return False
+
+    text_stripped = text.strip()
+    if not text_stripped:
+        return False
+
+    raw_words = [w for w in text_stripped.split() if w]
+    if not raw_words:
+        return False
+
+    if needs_fallback_ocr(text_stripped):
+        return False
+
+    cleaned = clean_pdf_text(text)
+    if not cleaned:
+        return len(raw_words) >= 2
+
+    if _is_noisy_page_text(cleaned):
+        return False
+
+    return True
+
+
+def _remember_ocr_provider(timings: Optional[Dict[str, Any]], page_num: Optional[int], provider: str) -> None:
+    if timings is None:
+        return
+    timings.setdefault("ocr_provider_by_page", {})
+    key = page_num if page_num is not None else 0
+    timings["ocr_provider_by_page"][key] = provider
+
+
+def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
+    """OCR wrapper preserving the current local pipeline and adding Gemini as final fallback."""
+    local_text = ""
     try:
         direct_text = _ocr_direct_image(page, timings=timings, page_num=page_num)
     except Exception as exc:
         logger.warning("Direct embedded-image OCR failed: %s", exc)
         direct_text = ""
 
-    if direct_text:
+    if direct_text and _sufficient_ocr_text(direct_text):
         _record_timing(timings, "direct_image_pages", 1)
+        _remember_ocr_provider(timings, page_num, "direct-image")
         logger.info("OCR_PATH=direct-image")
         logger.info("Direct image OCR produced %d chars", len(direct_text))
         return direct_text
+    local_text = direct_text or local_text
 
     logger.info("OCR_PATH=fallback-raster")
     logger.info("OCR_PATH_REASON=page-raster-fallback")
 
-    # Prefer RapidOCR when available because it is usually cheaper and faster.
     try:
         rapid_text = _extract_text_with_rapidocr(page, timings=timings)
     except Exception as exc:
         logger.warning("RapidOCR invocation failed: %s", exc)
         rapid_text = ""
 
-    if rapid_text:
+    if rapid_text and _sufficient_ocr_text(rapid_text):
         _record_timing(timings, "rapidocr_pages", 1)
+        _remember_ocr_provider(timings, page_num, "rapidocr")
         logger.info("OCR_PATH=rapidocr-fallback")
         logger.info("RapidOCR OCR produced %d chars", len(rapid_text))
         return rapid_text
+    local_text = rapid_text or local_text
 
     try:
         text = _tesseract_ocr_text(page, timings=timings, page_num=page_num)
@@ -1558,11 +1911,23 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
         logger.warning("Tesseract OCR invocation failed: %s", exc)
         text = ""
 
-    if text:
+    if text and _sufficient_ocr_text(text):
         _record_timing(timings, "tesseract_pages", 1)
+        _remember_ocr_provider(timings, page_num, "tesseract")
         return text
+    local_text = text or local_text
 
-    return text
+    gemini_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
+    if gemini_text and _sufficient_ocr_text(gemini_text):
+        _record_timing(timings, "gemini_pages", 1)
+        _remember_ocr_provider(timings, page_num, "gemini")
+        logger.info("OCR_PATH=gemini-fallback")
+        logger.info("Gemini OCR produced %d chars", len(gemini_text))
+        return gemini_text
+
+    if local_text:
+        _remember_ocr_provider(timings, page_num, "native")
+    return local_text or gemini_text or ""
 
 
 def _ocr_page_worker(page_num: int, page, timings: Dict[str, Any] = None, image_mode: bool = False):
@@ -1575,7 +1940,12 @@ def _ocr_page_worker(page_num: int, page, timings: Dict[str, Any] = None, image_
     finally:
         _ocr_context.image_mode = previous_image_mode
     ms = (time.perf_counter() - start) * 1000.0
-    return text, ms
+    provider = "native"
+    if timings is not None:
+        provider = timings.get("ocr_provider_by_page", {}).get(page_num, "native")
+    if not provider:
+        provider = "native"
+    return text, ms, provider
 
 
 def _ocr_needs_page(page_info: Dict[str, Any]) -> bool:
@@ -1931,16 +2301,15 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
         logger.info("OCR_POOL workers=%s candidates=%d", max_workers, len(ocr_candidates))
         logger.info("Starting OCR pool: max_workers=%s candidates=%d", max_workers, len(ocr_candidates))
 
-        # If there is only one candidate, avoid ThreadPool overhead and run synchronously.
         if len(ocr_candidates) == 1:
             page_num, page, cleaned, page_info, image_mode = ocr_candidates[0]
             try:
-                ocr_text, ocr_ms = _ocr_page_worker(page_num, page, timings, image_mode=image_mode)
+                ocr_text, ocr_ms, ocr_provider = _ocr_page_worker(page_num, page, timings, image_mode=image_mode)
             except Exception as exc:
                 logger.warning("Page %s OCR failed: %s", page_num + 1, exc)
-                ocr_text, ocr_ms = "", 0.0
+                ocr_text, ocr_ms, ocr_provider = "", 0.0, "native"
 
-            logger.info("Page %s OCR time: %.0f ms", page_num + 1, ocr_ms)
+            logger.info("Page %s OCR time: %.0f ms provider=%s", page_num + 1, ocr_ms, ocr_provider)
             if timings is not None:
                 _record_timing(timings, "page_ocr_ms", ocr_ms)
 
@@ -1949,13 +2318,17 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                 if chosen != cleaned:
                     used_ocr = True
                     page_info["ocr_used"] = True
+                    page_info["ocr_provider"] = ocr_provider
                     logger.info(
-                        "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words)",
+                        "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words) provider=%s",
                         page_num + 1,
                         _count_text_words(cleaned),
                         _count_text_words(clean_pdf_text(ocr_text)),
                         _count_text_words(chosen),
+                        ocr_provider,
                     )
+                else:
+                    page_info["ocr_provider"] = "native"
                 pages_text[page_num] = chosen
             page_info["ocr_ms"] = ocr_ms
         else:
@@ -1968,26 +2341,29 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                     page_num, cleaned, page_info = future_to_page[future]
                     ocr_text = ""
                     ocr_ms = 0.0
+                    ocr_provider = "native"
                     try:
-                        ocr_text, ocr_ms = future.result()
+                        ocr_text, ocr_ms, ocr_provider = future.result()
                     except Exception as exc:
                         logger.warning("Page %s OCR failed in thread: %s", page_num + 1, exc)
 
-                    logger.info("Page %s OCR time: %.0f ms", page_num + 1, ocr_ms)
+                    logger.info("Page %s OCR time: %.0f ms provider=%s", page_num + 1, ocr_ms, ocr_provider)
                     if timings is not None:
                         _record_timing(timings, "page_ocr_ms", ocr_ms)
 
                     if ocr_text:
                         chosen = _choose_page_text(cleaned, ocr_text, prefer_ocr=image_mode)
+                        page_info["ocr_provider"] = timings.get("ocr_provider_by_page", {}).get(page_num, "native") if timings else "native"
                         if chosen != cleaned:
                             used_ocr = True
                             page_info["ocr_used"] = True
                             logger.info(
-                                "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words)",
+                                "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words) provider=%s",
                                 page_num + 1,
                                 _count_text_words(cleaned),
                                 _count_text_words(clean_pdf_text(ocr_text)),
                                 _count_text_words(chosen),
+                                page_info["ocr_provider"],
                             )
                         pages_text[page_num] = chosen
                     page_info["ocr_ms"] = ocr_ms
