@@ -17,9 +17,9 @@ node_modules/
 !.yarn/versions
 
 # Local emergent proxy files
-emergent-proxy.js
-package.json
-package-lock.json
+/emergent-proxy.js
+/package.json
+/package-lock.json
 
 # Testing
 /coverage
