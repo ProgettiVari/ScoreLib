@@ -1,0 +1,16 @@
+{
+  "appId": "app.scorelib.mobile",
+  "appName": "ScoreLib",
+  "webDir": "build",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 600,
+      "backgroundColor": "#ffffff",
+      "showSpinner": false
+    }
+  }
+}

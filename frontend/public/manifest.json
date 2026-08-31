@@ -1,0 +1,36 @@
+{
+  "name": "ScoreLib",
+  "short_name": "ScoreLib",
+  "description": "Libreria rapida per spartiti PDF.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "categories": ["music", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/scorelib-icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Cerca",
+      "short_name": "Cerca",
+      "url": "/",
+      "icons": [{ "src": "/scorelib-icon.svg", "sizes": "192x192", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Libreria",
+      "short_name": "Libreria",
+      "url": "/library",
+      "icons": [{ "src": "/scorelib-icon.svg", "sizes": "192x192", "type": "image/svg+xml" }]
+    }
+  ]
+}

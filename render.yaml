@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: scorelib-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: TESSERACT_PATH
+        value: /usr/bin/tesseract
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASS
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
+      - key: EMAIL_REPLY_TO
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: GOOGLE_VISION_API_KEY
+        sync: false
+      - key: GOOGLE_CLOUD_VISION_API_KEY
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        sync: false
+

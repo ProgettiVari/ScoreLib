@@ -1,0 +1,122 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# IDE and editors
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Local emergent proxy files
+emergent-proxy.js
+package.json
+package-lock.json
+
+# Testing
+/coverage
+
+# Next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Production builds
+/build
+dist/
+dist
+
+# Environment files (comprehensive coverage)
+.env
+.env.test
+.env.local
+.env.*.local
+
+*token.json*
+*credentials.json*
+
+# Logs and debug files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dump.rdb
+
+# System files
+.DS_Store
+*.pem
+
+# Python
+__pycache__/
+*pyc*
+venv/
+.venv/
+
+# Development tools
+chainlit.md
+.chainlit
+.ipynb_checkpoints/
+.ac
+
+# Deployment
+.vercel
+
+# Data and databases
+agenthub/agents/youtube/db
+
+# Archive files and large assets
+**/*.zip
+**/*.tar.gz
+**/*.tar
+**/*.tgz
+*.pack
+*.deb
+*.dylib
+
+# Build caches
+.cache/
+
+memory/test_credentials.md
+
+# Mobile development
+android-sdk/
+
+# Environment and credential files
+.env
+.env.*
+*.env
+.env*.local
+credentials.json
+*.pem
+*.key
+.credentials
+
+frontend/node_modules/.cache/default-development/0.pack
+
+# Uploaded user content (must never be committed)
+backend/uploads/
+
+# Dev / agent artifacts
+.emergent/
+*.patch
+*.diff.txt
+tmp_*
+test_rate_limit*
+test_reports/
+test_result.md
+memory/
+bench_outputs/
+backend/tools/
+backend/bench_*
+backend/tmp_*
+backend/audit_*
+
