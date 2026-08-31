@@ -12,6 +12,7 @@ import Header from "@/components/Header";
 
 import Login from "@/pages/Login";
 import Home from "@/pages/Home";
+import Landing from "@/pages/Landing";
 import Library from "@/pages/Library";
 import SharedView from "@/pages/SharedView";
 import PdfViewer from "@/pages/PdfViewer";
@@ -95,6 +96,20 @@ function ChromeWrapper({ children }) {
   );
 }
 
+function RootRoute() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-mono text-sm text-muted2">
+        Caricamento…
+      </div>
+    );
+  }
+
+  return user ? <Home /> : <Landing />;
+}
+
 function AppShell() {
   const location = useLocation();
 
@@ -107,7 +122,7 @@ function AppShell() {
     <ChromeWrapper>
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route path="/" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+        <Route path="/" element={<RootRoute />} />
         <Route path="/library" element={<ProtectedRoute><Library /></ProtectedRoute>} />
         <Route path="/shared" element={<ProtectedRoute><Shared /></ProtectedRoute>} />
         <Route path="/libraries/:id" element={<ProtectedRoute><SharedLibraryDetail /></ProtectedRoute>} />
