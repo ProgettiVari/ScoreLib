@@ -19,6 +19,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import aiofiles
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.responses import Response, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -209,6 +210,77 @@ api = APIRouter(prefix="/api")
 
 logger = logging.getLogger("scorelib")
 logging.basicConfig(level=logging.INFO)
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+async def get_current_user_id(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> str:
+    """Validate the JWT and re-check the account status against the DB on every request."""
+    token = creds.credentials if creds and creds.credentials else None
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_id = decode_jwt(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user = await db.users.find_one({"user_id": user_id})
+    if not user:
+        raise HTTPException(status_code=401, detail="Non autenticato")
+
+    email = (user.get("email") or "").lower()
+    banned_flags = (
+        user.get("is_banned") is True
+        or user.get("banned") is True
+        or user.get("deleted") is True
+        or user.get("removed") is True
+    )
+    if banned_flags:
+        raise HTTPException(status_code=403, detail="Utente non autorizzato")
+
+    if not (user.get("is_admin", False) or email == ADMIN_EMAIL):
+        req = await db.access_requests.find_one({"email": email})
+        if not req or req.get("status") != "approved":
+            raise HTTPException(status_code=401, detail="Non autenticato")
+        if req.get("status") in {"banned", "rejected"}:
+            raise HTTPException(status_code=403, detail="Utente non autorizzato")
+
+    return user_id
+
+
+async def get_optional_user_id(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> Optional[str]:
+    token = creds.credentials if creds and creds.credentials else None
+    if not token:
+        return None
+
+    user_id = decode_jwt(token)
+    if not user_id:
+        return None
+
+    user = await db.users.find_one({"user_id": user_id})
+    if not user:
+        return None
+
+    email = (user.get("email") or "").lower()
+    if (
+        user.get("is_banned") is True
+        or user.get("banned") is True
+        or user.get("deleted") is True
+        or user.get("removed") is True
+    ):
+        return None
+
+    if not (user.get("is_admin", False) or email == ADMIN_EMAIL):
+        req = await db.access_requests.find_one({"email": email})
+        if not req or req.get("status") != "approved":
+            return None
+
+    return user_id
 
 
 def safe_create_task(coro):
@@ -982,23 +1054,28 @@ async def upload_pdf(
     total_uploaded_size = 0
     for file in files:
         content = await file.read()
+        filename = (file.filename or "").strip()
         total_uploaded_size += len(content)
         if not is_admin and total_uploaded_size > MAX_UPLOAD_QUEUE_SIZE_BYTES:
             raise HTTPException(status_code=413, detail=f"Superata la dimensione massima totale di {MAX_UPLOAD_QUEUE_SIZE_BYTES // (1024 * 1024)} MB per upload")
         if len(content) > MAX_UPLOAD_SIZE_BYTES:
             raise HTTPException(status_code=413, detail=f"File troppo grande: massimo {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB")
+        if not filename or Path(filename).suffix.lower() != ".pdf":
+            raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
+        if len(content) < 5 or not content.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
 
         pdf_bytes, was_compressed = compress_pdf(content)
         pdf_id = f"pdf_{uuid.uuid4().hex[:12]}"
-        filename = re.sub(r"[^\w\-\.]", "_", file.filename)
-        fpath = UPLOAD_DIR / f"{pdf_id}_{filename}"
+        safe_filename = re.sub(r"[^\w\-\.]", "_", filename)
+        fpath = UPLOAD_DIR / f"{pdf_id}_{safe_filename}"
         fpath.write_bytes(pdf_bytes)
 
         await db.pdfs.insert_one({
             "id": pdf_id,
-            "title": filename,
-            "title_normalized": normalize_pdf_text(filename),
-            "filename": filename,
+            "title": safe_filename,
+            "title_normalized": normalize_pdf_text(safe_filename),
+            "filename": safe_filename,
             "file_path": str(fpath),
             "size": len(pdf_bytes),
             "status": "pending",
