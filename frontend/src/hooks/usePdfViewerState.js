@@ -17,6 +17,27 @@ function normalizeApostrophes(value) {
   return value.replace(/[’‘]/g, "'");
 }
 
+export function shouldIgnoreScrollPageSync({ currentPage, detectedPage, targetPage, pageRefs }) {
+  if (!Number.isFinite(currentPage) || !Number.isFinite(detectedPage)) return false;
+  const target = Number.isFinite(targetPage) ? targetPage : currentPage;
+  const targetNode = pageRefs?.current?.[target];
+  if (!targetNode || !Number.isFinite(targetNode.offsetHeight)) return false;
+
+  const isBlankTarget = targetNode.offsetHeight <= 0;
+  const isStaleScroll = detectedPage !== currentPage && target === currentPage && isBlankTarget;
+
+  if (isStaleScroll) {
+    console.debug("[PdfViewer] ignoring stale scroll sync while blank page settles", {
+      currentPage,
+      detectedPage,
+      targetPage: target,
+      targetOffsetHeight: targetNode.offsetHeight,
+    });
+  }
+
+  return isStaleScroll;
+}
+
 export function detectVisiblePage(scrollY, getToolbarOffset, pageRefs, numPages, slotHeight) {
   if (numPages <= 0) return 1;
   const viewTop = scrollY + getToolbarOffset();
@@ -28,8 +49,12 @@ export function detectVisiblePage(scrollY, getToolbarOffset, pageRefs, numPages,
     const el = pageRefs.current[p];
     if (!el) continue;
     anyMounted = true;
-    const top = el.offsetTop;
-    const bottom = top + el.offsetHeight;
+
+    const logicalTop = (p - 1) * slotHeight;
+    const top = Number.isFinite(el.offsetTop) && el.offsetTop > 0 ? el.offsetTop : logicalTop;
+    const effectiveHeight = Number.isFinite(el.offsetHeight) && el.offsetHeight > 0 ? el.offsetHeight : Math.max(slotHeight, 1);
+    const bottom = top + effectiveHeight;
+
     if (viewCenter >= top && viewCenter < bottom) return p;
     if (top <= viewCenter) bestFromDom = p;
   }
@@ -106,7 +131,7 @@ function usePageController({
         if (el) {
           const top = el.getBoundingClientRect().top + window.scrollY - getToolbarOffset();
           window.scrollTo({ top: Math.max(0, top), behavior });
-          finish();
+          window.setTimeout(finish, 180);
           return;
         }
         if (attempts < 80) {
@@ -114,7 +139,7 @@ function usePageController({
           return;
         }
         window.scrollTo({ top: Math.max(0, (p - 1) * slotHeight), behavior });
-        finish();
+        window.setTimeout(finish, 180);
       };
 
       requestAnimationFrame(() => tryScroll());
@@ -152,14 +177,23 @@ function usePageController({
 
   const applyPageFromScroll = useCallback(
     (scrollY) => {
-      if (numPages <= 0 || programmaticScrollRef.current) return;
+      if (numPages <= 0 || programmaticScrollRef.current || pendingScrollPageRef.current != null) return;
       if (initialScrollDoneRef && !initialScrollDoneRef.current) return;
       const detected = detectVisiblePage(scrollY, getToolbarOffset, pageRefs, numPages, slotHeight);
+      const targetPage = pendingScrollPageRef.current ?? currentPageRef.current;
+      if (shouldIgnoreScrollPageSync({
+        currentPage: currentPageRef.current,
+        detectedPage: detected,
+        targetPage,
+        pageRefs,
+      })) {
+        return;
+      }
       if (detected !== currentPageRef.current) {
         setPageState(detected, { source: "scroll" });
       }
     },
-    [numPages, getToolbarOffset, pageRefs, slotHeight, currentPageRef, programmaticScrollRef, initialScrollDoneRef, setPageState],
+    [numPages, getToolbarOffset, pageRefs, slotHeight, currentPageRef, programmaticScrollRef, pendingScrollPageRef, initialScrollDoneRef, setPageState],
   );
 
   return {
