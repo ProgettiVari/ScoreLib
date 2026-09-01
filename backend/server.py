@@ -2006,29 +2006,37 @@ def _job_waiting_for_gemini_quota_status() -> str:
 
 def _gemini_quota_resume_ranges(total_pages: int, quota_page: Optional[int] = None, completed_pages: Optional[List[int]] = None, pending_pages: Optional[List[int]] = None) -> Tuple[List[int], List[int]]:
     total_pages = max(0, int(total_pages or 0))
-    if pending_pages is not None:
-        pending = sorted({int(page) for page in pending_pages if 1 <= int(page) <= total_pages})
-    elif quota_page is not None:
-        quota_page = max(1, min(int(quota_page), total_pages)) if total_pages else 0
-        pending = list(range(quota_page, total_pages + 1)) if total_pages else []
-    else:
-        pending = list(range(1, total_pages + 1))
 
     if completed_pages is not None:
         completed = sorted({int(page) for page in completed_pages if 1 <= int(page) <= total_pages})
     else:
         completed = []
 
-    if not completed and quota_page is not None and total_pages:
+    if pending_pages is not None:
+        pending = sorted({int(page) for page in pending_pages if 1 <= int(page) <= total_pages})
+    elif quota_page is not None and total_pages:
+        quota_page = max(1, min(int(quota_page), total_pages))
+        pending = list(range(quota_page, total_pages + 1))
+    else:
+        pending = []
+
+    if quota_page is not None and total_pages and not completed:
         quota_page = max(1, min(int(quota_page), total_pages))
         completed = list(range(1, quota_page))
+
     if pending and not completed:
         completed = [page for page in range(1, total_pages + 1) if page not in pending]
+
     if pending and completed:
         pending = sorted({page for page in pending if page not in completed})
         completed = sorted({page for page in completed if 1 <= page <= total_pages})
-    if not pending and total_pages:
-        completed = list(range(1, total_pages + 1))
+
+    if quota_page is not None and total_pages and not pending and completed:
+        completed = sorted({page for page in range(1, total_pages + 1) if page not in pending})
+
+    if quota_page is None and not pending and not completed:
+        return [], []
+
     return completed, pending
 
 
