@@ -253,6 +253,84 @@ def test_ocr_page_worker_returns_legacy_provider_contract(monkeypatch):
     assert elapsed_ms >= 0.0
 
 
+def test_choose_page_text_tracks_provider_explicitly():
+    import pdf_processor
+
+    native = "Alpha beta gamma delta epsilon zeta"
+    ocr = "Alpha beta gamma"
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        native,
+        ocr,
+        native_provider="native",
+        ocr_provider="gemini",
+        prefer_ocr=False,
+    )
+    assert chosen_text == native
+    assert chosen_provider == "native"
+
+    native = "Alpha beta gamma"
+    ocr = "uno due tre quattro cinque sei sette otto nove dieci undici"
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        native,
+        ocr,
+        native_provider="native",
+        ocr_provider="gemini",
+        prefer_ocr=False,
+    )
+    assert chosen_text == ocr
+    assert chosen_provider == "gemini"
+
+    native = "Alpha beta gamma"
+    ocr = "uno due tre quattro cinque sei sette otto nove dieci undici"
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        native,
+        ocr,
+        native_provider="native",
+        ocr_provider="tesseract",
+        prefer_ocr=False,
+    )
+    assert chosen_text == ocr
+    assert chosen_provider == "tesseract"
+
+
+def test_choose_page_text_provider_is_not_inferred_from_word_count():
+    import pdf_processor
+
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        "Alpha beta gamma delta epsilon zeta",
+        "uno due tre",
+        native_provider="native",
+        ocr_provider="gemini",
+        prefer_ocr=False,
+    )
+    assert chosen_text == "Alpha beta gamma delta epsilon zeta uno due tre"
+    assert chosen_provider == "combined"
+
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        "Alpha beta gamma",
+        "uno due tre quattro cinque sei sette otto nove dieci undici",
+        native_provider="native",
+        ocr_provider="gemini",
+        prefer_ocr=False,
+    )
+    assert chosen_text == "uno due tre quattro cinque sei sette otto nove dieci undici"
+    assert chosen_provider == "gemini"
+
+
+def test_real_gemini_ocr_case_keeps_provider_for_selected_ocr_text():
+    import pdf_processor
+
+    chosen_text, chosen_provider = pdf_processor._choose_page_text(
+        "",
+        "testo OCR",
+        native_provider="native",
+        ocr_provider="gemini",
+        prefer_ocr=False,
+    )
+    assert chosen_text == "testo OCR"
+    assert chosen_provider == "gemini"
+
+
 def test_calculate_match_quality_prioritizes_phrase_similarity_over_single_word():
     target = "Cristo salvò col Suo prezioso sangue"
     phrase_query = "cristo salvo sangue"

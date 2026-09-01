@@ -890,58 +890,77 @@ def _is_noisy_page_text(cleaned_text: str) -> bool:
     return False
 
 
-def _choose_page_text(native_text: str, ocr_text: str, prefer_ocr: bool = False) -> str:
+def _normalize_provider(provider: Optional[str], default: str = "native") -> str:
+    value = (provider or default).strip().lower()
+    if not value:
+        return default
+    if value == "direct image":
+        return "direct-image"
+    if value == "rapid ocr":
+        return "rapidocr"
+    return value
+
+
+def _choose_page_text(
+    native_text: str,
+    ocr_text: str,
+    native_provider: str = "native",
+    ocr_provider: str = "native",
+    prefer_ocr: bool = False,
+    *,
+    return_provider: bool = True,
+):
+    """Return a deterministic pair (chosen_text, chosen_provider).
+
+    The algorithm for selecting the content is intentionally unchanged. The only change is that
+    the selected text is carried together with the source provider of that exact text.
+    """
     cleaned_native = clean_pdf_text(native_text)
     cleaned_ocr = clean_pdf_text(ocr_text)
+    native_provider = _normalize_provider(native_provider, "native")
+    ocr_provider = _normalize_provider(ocr_provider, "native")
+
     if not cleaned_native:
-        return cleaned_ocr
+        chosen = cleaned_ocr
+        chosen_provider = ocr_provider if cleaned_ocr else "native"
+        return (chosen, chosen_provider) if return_provider else chosen
     if not cleaned_ocr:
-        return cleaned_native
+        chosen = cleaned_native
+        chosen_provider = native_provider
+        return (chosen, chosen_provider) if return_provider else chosen
 
     native_words = _count_text_words(cleaned_native)
     ocr_words = _count_text_words(cleaned_ocr)
 
     if prefer_ocr and not _is_noisy_page_text(cleaned_ocr):
         if _is_noisy_page_text(cleaned_native) or ocr_words >= native_words + 2:
-            return cleaned_ocr
+            return (cleaned_ocr, ocr_provider) if return_provider else cleaned_ocr
 
     if _is_noisy_page_text(cleaned_native) and not _is_noisy_page_text(cleaned_ocr):
-        return cleaned_ocr
+        return (cleaned_ocr, ocr_provider) if return_provider else cleaned_ocr
 
     if ocr_words > native_words + 4:
-        return cleaned_ocr
+        return (cleaned_ocr, ocr_provider) if return_provider else cleaned_ocr
 
     if cleaned_ocr not in cleaned_native:
-        return f"{cleaned_native} {cleaned_ocr}".strip()
-    return cleaned_native
+        chosen = f"{cleaned_native} {cleaned_ocr}".strip()
+        return (chosen, "combined") if return_provider else chosen
+
+    return (cleaned_native, native_provider) if return_provider else cleaned_native
 
 
-def _provider_for_final_text(native_text: str, ocr_text: str, chosen_text: str, ocr_provider: str = "native") -> str:
-    """Return the provider corresponding to the text that was actually kept."""
-    cleaned_native = clean_pdf_text(native_text)
-    cleaned_ocr = clean_pdf_text(ocr_text)
-    cleaned_chosen = clean_pdf_text(chosen_text)
-
-    if not cleaned_chosen:
-        return "native"
-    if not cleaned_ocr:
-        return "native"
-    if cleaned_chosen == cleaned_native and cleaned_chosen != cleaned_ocr:
-        return "native"
-    if cleaned_chosen == cleaned_ocr and cleaned_chosen != cleaned_native:
-        return ocr_provider or "native"
-    if cleaned_chosen == cleaned_native == cleaned_ocr:
-        return ocr_provider if ocr_provider and ocr_provider != "native" else "native"
-
-    native_words = _count_text_words(cleaned_native)
-    ocr_words = _count_text_words(cleaned_ocr)
-    chosen_words = _count_text_words(cleaned_chosen)
-
-    if native_words >= ocr_words and chosen_words <= native_words:
-        return "native"
-    if ocr_provider and ocr_provider != "native":
-        return ocr_provider
-    return "native"
+def _provider_for_final_text(
+    native_text: str = "",
+    ocr_text: str = "",
+    chosen_text: str = "",
+    ocr_provider: str = "native",
+    *,
+    chosen_provider: Optional[str] = None,
+) -> str:
+    """Compatibility-only helper: provider is already explicit in the chosen payload."""
+    if chosen_provider is not None:
+        return _normalize_provider(chosen_provider, "native")
+    return _normalize_provider(ocr_provider, "native")
 
 
 def _has_boilerplate_text(cleaned_text: str) -> bool:
@@ -1923,8 +1942,8 @@ def _is_probably_blank_page(page, cleaned_text: str = "") -> bool:
     return True
 
 
-def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
-    """OCR wrapper preserving the current local pipeline and adding Gemini as final fallback."""
+def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *, return_provider: bool = False):
+    """OCR wrapper preserving the current local pipeline and returning the provider with the selected text."""
     local_text = ""
     try:
         direct_text = _ocr_direct_image(page, timings=timings, page_num=page_num)
@@ -1937,7 +1956,7 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
         _remember_ocr_provider(timings, page_num, "direct-image")
         logger.info("OCR_PATH=direct-image")
         logger.info("Direct image OCR produced %d chars", len(direct_text))
-        return direct_text
+        return (direct_text, "direct-image") if return_provider else direct_text
     local_text = direct_text or local_text
 
     logger.info("OCR_PATH=fallback-raster")
@@ -1954,7 +1973,7 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
         _remember_ocr_provider(timings, page_num, "rapidocr")
         logger.info("OCR_PATH=rapidocr-fallback")
         logger.info("RapidOCR OCR produced %d chars", len(rapid_text))
-        return rapid_text
+        return (rapid_text, "rapidocr") if return_provider else rapid_text
     local_text = rapid_text or local_text
 
     try:
@@ -1972,14 +1991,15 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
     if text and _sufficient_ocr_text(text):
         _record_timing(timings, "tesseract_pages", 1)
         _remember_ocr_provider(timings, page_num, "tesseract")
-        return text
+        return (text, "tesseract") if return_provider else text
     local_text = text or local_text
 
     if _is_probably_blank_page(page, local_text):
         logger.info("OCR_SKIP_BLANK_PAGE page=%s reason=no_native_text_and_no_visible_content", page_num + 1 if page_num is not None else "?")
         if local_text:
             _remember_ocr_provider(timings, page_num, "native")
-        return local_text or ""
+        final_text = local_text or ""
+        return (final_text, "native") if return_provider else final_text
 
     gemini_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
     if gemini_text and _sufficient_ocr_text(gemini_text):
@@ -1987,11 +2007,12 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
         _remember_ocr_provider(timings, page_num, "gemini")
         logger.info("OCR_PATH=gemini-fallback")
         logger.info("Gemini OCR produced %d chars", len(gemini_text))
-        return gemini_text
+        return (gemini_text, "gemini") if return_provider else gemini_text
 
     if local_text:
         _remember_ocr_provider(timings, page_num, "native")
-    return local_text or gemini_text or ""
+    final_text = local_text or gemini_text or ""
+    return (final_text, "native") if return_provider else final_text
 
 
 def _ocr_page_worker(page_num: int, page, timings: Dict[str, Any] = None, image_mode: bool = False):
@@ -2000,15 +2021,17 @@ def _ocr_page_worker(page_num: int, page, timings: Dict[str, Any] = None, image_
     previous_image_mode = getattr(_ocr_context, "image_mode", False)
     _ocr_context.image_mode = image_mode
     try:
-        text = _ocr_page_text(page, timings=timings, page_num=page_num)
+        try:
+            text, provider = _ocr_page_text(page, timings=timings, page_num=page_num, return_provider=True)
+        except TypeError:
+            text = _ocr_page_text(page, timings=timings, page_num=page_num)
+            provider = timing_provider = timings.get("ocr_provider_by_page", {}).get(page_num, "native") if timings else "native"
+            provider = provider or "native"
     finally:
         _ocr_context.image_mode = previous_image_mode
     ms = (time.perf_counter() - start) * 1000.0
-    provider = "native"
     if timings is not None:
-        provider = timings.get("ocr_provider_by_page", {}).get(page_num, "native")
-    if not provider:
-        provider = "native"
+        _remember_ocr_provider(timings, page_num, provider)
     return text, ms, provider
 
 
@@ -2378,22 +2401,25 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                 _record_timing(timings, "page_ocr_ms", ocr_ms)
 
             if ocr_text:
-                chosen = _choose_page_text(cleaned, ocr_text, prefer_ocr=image_mode)
-                final_provider = _provider_for_final_text(cleaned, ocr_text, chosen, ocr_provider)
+                chosen, chosen_provider = _choose_page_text(
+                    cleaned,
+                    ocr_text,
+                    native_provider="native",
+                    ocr_provider=ocr_provider,
+                    prefer_ocr=image_mode,
+                )
+                page_info["ocr_provider"] = chosen_provider
                 if chosen != cleaned:
                     used_ocr = True
                     page_info["ocr_used"] = True
-                    page_info["ocr_provider"] = final_provider
                     logger.info(
                         "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words) provider=%s",
                         page_num + 1,
                         _count_text_words(cleaned),
                         _count_text_words(clean_pdf_text(ocr_text)),
                         _count_text_words(chosen),
-                        final_provider,
+                        chosen_provider,
                     )
-                else:
-                    page_info["ocr_provider"] = "native"
                 pages_text[page_num] = chosen
             page_info["ocr_ms"] = ocr_ms
         else:
@@ -2417,9 +2443,14 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                         _record_timing(timings, "page_ocr_ms", ocr_ms)
 
                     if ocr_text:
-                        chosen = _choose_page_text(cleaned, ocr_text, prefer_ocr=image_mode)
-                        final_provider = _provider_for_final_text(cleaned, ocr_text, chosen, ocr_provider)
-                        page_info["ocr_provider"] = final_provider
+                        chosen, chosen_provider = _choose_page_text(
+                            cleaned,
+                            ocr_text,
+                            native_provider="native",
+                            ocr_provider=ocr_provider,
+                            prefer_ocr=image_mode,
+                        )
+                        page_info["ocr_provider"] = chosen_provider
                         if chosen != cleaned:
                             used_ocr = True
                             page_info["ocr_used"] = True
@@ -2429,7 +2460,7 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                                 _count_text_words(cleaned),
                                 _count_text_words(clean_pdf_text(ocr_text)),
                                 _count_text_words(chosen),
-                                final_provider,
+                                chosen_provider,
                             )
                         pages_text[page_num] = chosen
                     page_info["ocr_ms"] = ocr_ms
