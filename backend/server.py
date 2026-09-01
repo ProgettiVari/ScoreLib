@@ -10,6 +10,7 @@ import asyncio
 import psutil
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -1055,8 +1056,12 @@ async def upload_pdf(
     results = []
     total_uploaded_size = 0
     for file in files:
+        recv_start = time.perf_counter()
         content = await file.read()
         filename = (file.filename or "").strip()
+        recv_ms = (time.perf_counter() - recv_start) * 1000
+        logger.info("PDF.UPLOAD_RECEIVED size=%d filename=%s recv_ms=%.1f", len(content), filename, recv_ms)
+        
         total_uploaded_size += len(content)
         if not is_admin and total_uploaded_size > MAX_UPLOAD_QUEUE_SIZE_BYTES:
             raise HTTPException(status_code=413, detail=f"Superata la dimensione massima totale di {MAX_UPLOAD_QUEUE_SIZE_BYTES // (1024 * 1024)} MB per upload")
@@ -1067,11 +1072,15 @@ async def upload_pdf(
         if len(content) < 5 or not content.startswith(b"%PDF-"):
             raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
 
-        pdf_bytes, was_compressed = compress_pdf(content)
+        # Save PDF without compression first (fast path for response)
+        # Compression will happen in background job during OCR processing
         pdf_id = f"pdf_{uuid.uuid4().hex[:12]}"
         safe_filename = re.sub(r"[^\w\-\.]", "_", filename)
         fpath = UPLOAD_DIR / f"{pdf_id}_{safe_filename}"
-        fpath.write_bytes(pdf_bytes)
+        save_start = time.perf_counter()
+        fpath.write_bytes(content)
+        save_ms = (time.perf_counter() - save_start) * 1000
+        logger.info("PDF.UPLOAD_SAVED pdf=%s size=%d save_ms=%.1f", pdf_id, len(content), save_ms)
 
         await db.pdfs.insert_one({
             "id": pdf_id,
@@ -1079,10 +1088,10 @@ async def upload_pdf(
             "title_normalized": normalize_pdf_text(safe_filename),
             "filename": safe_filename,
             "file_path": str(fpath),
-            "size": len(pdf_bytes),
+            "size": len(content),
             "status": "pending",
             "owner_id": user_id,
-            "compressed": was_compressed,
+            "compressed": False,  # Will compress in background
             "storage_type": "local",
             "drive_owner": None,
             "drive_file_id": None,
@@ -1091,15 +1100,18 @@ async def upload_pdf(
         })
 
         job_id = str(uuid.uuid4())
+        job_start = time.perf_counter()
         await db.upload_jobs.insert_one({
             "id": job_id,
             "pdf_id": pdf_id,
             "status": "queued",
             "created_at": iso_now()
         })
+        job_ms = (time.perf_counter() - job_start) * 1000
+        logger.info("PDF.UPLOAD_JOB_CREATED pdf=%s job=%s job_ms=%.1f", pdf_id, job_id, job_ms)
         background_tasks.add_task(process_pdf_job, job_id)
 
-        results.append({"ok": True, "pdf_id": pdf_id, "name": filename, "compressed": was_compressed})
+        results.append({"ok": True, "pdf_id": pdf_id, "name": filename, "compressed": False})
 
     if results:
         await log_event("pdf.uploaded", f"Upload completato: {len(results)} file", user_id=user_id, meta={"count": len(results)})
@@ -2190,6 +2202,22 @@ async def process_pdf_job(job_id):
         fpath = Path(pdf["file_path"])
         if fpath.exists():
             pdf_bytes = fpath.read_bytes()
+            
+            # Compress PDF in background if not already compressed
+            if not pdf.get("compressed"):
+                compress_start = time.perf_counter()
+                compressed_bytes, was_compressed = await asyncio.to_thread(compress_pdf, pdf_bytes)
+                compress_ms = (time.perf_counter() - compress_start) * 1000
+                if was_compressed:
+                    logger.info("PDF.COMPRESS_DONE pdf=%s original=%d compressed=%d ms=%.1f ratio=%.2f", 
+                                pdf["id"], len(pdf_bytes), len(compressed_bytes), compress_ms, len(compressed_bytes) / len(pdf_bytes))
+                    pdf_bytes = compressed_bytes
+                    fpath.write_bytes(pdf_bytes)
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"compressed": True, "size": len(pdf_bytes), "updated_at": iso_now()}})
+                else:
+                    logger.info("PDF.COMPRESS_SKIP pdf=%s size=%d (no benefit) ms=%.1f", pdf["id"], len(pdf_bytes), compress_ms)
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"compressed": False, "updated_at": iso_now()}})
+            
             resume_completed_pages = job.get("gemini_completed_pages") or []
             resume_pending_pages = job.get("gemini_pending_pages") or []
             resume_quota_page = job.get("gemini_quota_page")

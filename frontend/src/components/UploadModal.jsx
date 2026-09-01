@@ -171,6 +171,7 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
 
         const completed = await api.post(`/pdfs/upload`, formData, {
           signal: ctrl.signal,
+          timeout: 120000,  // Large PDF uploads can take >15s; allow 2min for transmission + processing
           onUploadProgress: (evt) => {
             if (!mountedRef.current) return;
             const loaded = Math.min(evt.loaded, evt.total || evt.loaded);

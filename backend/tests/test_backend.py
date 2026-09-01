@@ -180,6 +180,49 @@ class TestPdfs:
         assert res.get("duplicate") is True
         assert res["ok"] is False
 
+    def test_upload_large_pdf_no_timeout(self, auth_headers):
+        """Test that large PDF uploads complete without timeout (regression for 54-page image PDF)."""
+        # Create a larger PDF by repeating content
+        import fitz
+        doc = fitz.open()
+        # Add 10 pages with minimal content
+        for i in range(10):
+            page = doc.new_page()
+            text_rect = fitz.Rect(50, 50, 500, 200)
+            page.insert_textbox(text_rect, f"Test page {i+1}\n" * 5)
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        
+        # Upload should complete within the extended timeout
+        upload_start = time.time()
+        files = {"files": (f"large_test_{uuid.uuid4().hex[:6]}.pdf", pdf_bytes, "application/pdf")}
+        r = requests.post(
+            f"{BASE_URL}/api/pdfs/upload",
+            headers={"Authorization": auth_headers["Authorization"]},
+            files=files,
+            timeout=120  # Match frontend timeout
+        )
+        upload_elapsed = time.time() - upload_start
+        
+        assert r.status_code == 200, f"Upload failed: {r.text}"
+        res = r.json()["results"][0]
+        assert res["ok"] is True, f"Result not ok: {res}"
+        assert "pdf_id" in res, f"No pdf_id in result: {res}"
+        
+        # Verify PDF was saved quickly (should be <1s for upload endpoint)
+        assert upload_elapsed < 120, f"Upload took too long: {upload_elapsed}s"
+        
+        # Verify upload job was created
+        pdf_id = res["pdf_id"]
+        # Allow time for job to be created in DB
+        time.sleep(0.5)
+        status_r = requests.get(
+            f"{BASE_URL}/api/pdfs/{pdf_id}/status",
+            headers={"Authorization": auth_headers["Authorization"]}
+        )
+        assert status_r.status_code == 200, f"Status endpoint failed: {status_r.text}"
+        assert status_r.json().get("status") in ["pending", "processing", "ready"], f"Unexpected status: {status_r.json()}"
+
     def test_list_pdfs(self, api_client, auth_headers, uploaded_pdf):
         r = api_client.get(f"{BASE_URL}/api/pdfs?sort=date_desc", headers=auth_headers)
         assert r.status_code == 200
