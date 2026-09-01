@@ -2236,7 +2236,7 @@ async def process_pdf_job(job_id):
                 used_ocr,
             )
 
-            tasks = []
+            page_write_tasks = []
             for i, txt in enumerate(pages_text):
                 page_num = page_map[i]
                 if page_num in completed_pages:
@@ -2268,15 +2268,45 @@ async def process_pdf_job(job_id):
                     "ocr_provider": page_details[i].get("ocr_provider", "native") if i < len(page_details) else "native",
                     **metadata,
                 }
-                tasks.append(
-                    db.pdf_pages.update_one(
-                        {"pdf_id": pdf["id"], "page": page_num},
-                        {"$set": update_doc},
-                        upsert=True,
+                page_write_tasks.append(
+                    (
+                        page_num,
+                        db.pdf_pages.update_one(
+                            {"pdf_id": pdf["id"], "page": page_num},
+                            {"$set": update_doc},
+                            upsert=True,
+                        ),
                     )
                 )
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+
+            if page_write_tasks:
+                results = await asyncio.gather(
+                    *(update_task for _, update_task in page_write_tasks),
+                    return_exceptions=True,
+                )
+                failed_writes = []
+                for (page_num, _), result in zip(page_write_tasks, results):
+                    if isinstance(result, Exception):
+                        failed_writes.append((page_num, result))
+                        logger.error(
+                            "PDF.PAGES_WRITE_ERROR pdf=%s page=%s operation=pdf_pages.update_one error=%s",
+                            pdf["id"],
+                            page_num,
+                            repr(result),
+                        )
+                if failed_writes:
+                    logger.error(
+                        "PDF.PAGES_WRITE_FAILED pdf=%s failed_pages=%s total_failed=%d",
+                        pdf["id"],
+                        [page_num for page_num, _ in failed_writes],
+                        len(failed_writes),
+                    )
+                    await db.upload_jobs.update_one(
+                        {"id": job_id},
+                        {"$set": {"status": "failed", "error": f"Mongo page write failed for pdf {pdf['id']}" , "updated_at": iso_now()}},
+                    )
+                    return
+
             logger.info(f"PDF {pdf['id']} indexing complete")
             await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "ready", "pages": total, "page_labels": page_labels}})
             async def backup_drive():

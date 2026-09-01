@@ -371,6 +371,165 @@ def test_process_pdf_job_resume_skips_completed_pages_and_retries_pending_only(m
     assert any(entry[1] == 31 for entry in page_updates)
 
 
+def _build_page_write_test_env(monkeypatch, tmp_path, *, page_failures=None, extracted_pages=None):
+    import io
+    import server
+    from reportlab.pdfgen import canvas as reportlab_canvas
+
+    page_failures = set(page_failures or [])
+    buf = io.BytesIO()
+    c = reportlab_canvas.Canvas(buf, pagesize=(612, 792))
+    for i in range(4):
+        c.drawString(100, 700, f"Page {i + 1} text for mongo write test")
+        if i < 3:
+            c.showPage()
+    c.save()
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(buf.getvalue())
+
+    job = {
+        "id": "job-1",
+        "pdf_id": "pdf-1",
+        "status": "processing",
+        "gemini_completed_pages": [],
+        "gemini_pending_pages": [1, 2, 3, 4],
+        "gemini_quota_page": None,
+    }
+    pdf = {"id": "pdf-1", "file_path": str(pdf_path), "owner_id": "user-1"}
+    page_updates = []
+    job_updates = []
+    log_entries = []
+
+    class FakeLogger:
+        def info(self, *args, **kwargs):
+            log_entries.append(("info", args, kwargs))
+
+        def warning(self, *args, **kwargs):
+            log_entries.append(("warning", args, kwargs))
+
+        def error(self, *args, **kwargs):
+            log_entries.append(("error", args, kwargs))
+
+    class FakeUploadJobs:
+        async def find_one(self, query):
+            if query.get("id") == "job-1":
+                return job
+            return None
+
+        async def update_one(self, query, update, upsert=False):
+            payload = update.get("$set", {})
+            job_updates.append({"query": query, "payload": payload, "upsert": upsert})
+            if query.get("id") == "job-1":
+                job["status"] = payload.get("status", job.get("status"))
+            return None
+
+    class FakePdfs:
+        async def find_one(self, query):
+            if query.get("id") == "pdf-1":
+                return pdf
+            return None
+
+        async def update_one(self, query, update, upsert=False):
+            return None
+
+    class FakeCursor:
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        async def to_list(self, *_args, **_kwargs):
+            return []
+
+    class FakePdfPages:
+        def find(self, *args, **kwargs):
+            return FakeCursor()
+
+        async def update_one(self, query, update, upsert=False):
+            page_num = query.get("page")
+            if page_num in page_failures:
+                page_updates.append(("PAGE_ERROR", page_num))
+                raise RuntimeError(f"mongo write failed page {page_num}")
+            page_updates.append(("PAGE_OK", page_num))
+            return None
+
+    fake_db = type("FakeDB", (), {"upload_jobs": FakeUploadJobs(), "pdfs": FakePdfs(), "pdf_pages": FakePdfPages()})()
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "safe_create_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "get_master_drive", lambda: None)
+    monkeypatch.setattr(server, "logger", FakeLogger())
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(server.asyncio, "to_thread", fake_to_thread)
+    if extracted_pages is None:
+        extracted_pages = ([f"page-{i}" for i in range(1, 5)], [f"raw-{i}" for i in range(1, 5)], 4, False, [str(i) for i in range(1, 5)])
+    monkeypatch.setattr(server, "_extract_pages_sync", lambda *args, **kwargs: extracted_pages)
+    return {"job_updates": job_updates, "page_updates": page_updates, "log_entries": log_entries, "job": job, "pdf": pdf}
+
+
+def test_process_pdf_job_marks_completed_only_when_all_page_writes_succeed(monkeypatch, tmp_path):
+    import asyncio
+    import server
+
+    env = _build_page_write_test_env(monkeypatch, tmp_path)
+
+    async def _run():
+        await server.process_pdf_job("job-1")
+
+    asyncio.run(_run())
+
+    assert any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+    assert any("indexing complete" in str(entry[1][0]) for entry in env["log_entries"] if entry[0] == "info")
+
+
+def test_process_pdf_job_fails_job_when_any_page_write_fails(monkeypatch, tmp_path):
+    import asyncio
+    import server
+
+    env = _build_page_write_test_env(monkeypatch, tmp_path, page_failures={2})
+
+    async def _run():
+        await server.process_pdf_job("job-1")
+
+    asyncio.run(_run())
+
+    assert not any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+    assert any("PDF.PAGES_WRITE_ERROR" in str(entry[1][0]) for entry in env["log_entries"] if entry[0] == "error")
+    assert any(update["payload"].get("status") == "failed" for update in env["job_updates"])
+
+
+def test_process_pdf_job_reports_every_page_write_error(monkeypatch, tmp_path):
+    import asyncio
+    import server
+
+    env = _build_page_write_test_env(monkeypatch, tmp_path, page_failures={2, 4})
+
+    async def _run():
+        await server.process_pdf_job("job-1")
+
+    asyncio.run(_run())
+
+    error_logs = [entry for entry in env["log_entries"] if entry[0] == "error"]
+    assert len(error_logs) >= 2
+    assert not any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+    assert any(update["payload"].get("status") == "failed" for update in env["job_updates"])
+
+
+def test_process_pdf_job_zero_tasks_keeps_completion_logic_consistent(monkeypatch, tmp_path):
+    import asyncio
+    import server
+
+    env = _build_page_write_test_env(monkeypatch, tmp_path, extracted_pages=([], [], 0, False, []))
+
+    async def _run():
+        await server.process_pdf_job("job-1")
+
+    asyncio.run(_run())
+
+    assert any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+
+
 def test_estimate_text_similarity_is_high_for_nearly_identical_phrases():
     text_a = "Cristo salvò col Suo prezioso sangue"
     text_b = "Cristo salvò col suo prezioso sangue"
