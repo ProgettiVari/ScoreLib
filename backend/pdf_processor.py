@@ -1945,6 +1945,7 @@ def _is_probably_blank_page(page, cleaned_text: str = "") -> bool:
 def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *, return_provider: bool = False):
     """OCR wrapper preserving the current local pipeline and returning the provider with the selected text."""
     local_text = ""
+    local_provider = "native"
     try:
         direct_text = _ocr_direct_image(page, timings=timings, page_num=page_num)
     except Exception as exc:
@@ -1957,7 +1958,9 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *
         logger.info("OCR_PATH=direct-image")
         logger.info("Direct image OCR produced %d chars", len(direct_text))
         return (direct_text, "direct-image") if return_provider else direct_text
-    local_text = direct_text or local_text
+    if direct_text:
+        local_text = direct_text
+        local_provider = "direct-image"
 
     logger.info("OCR_PATH=fallback-raster")
     logger.info("OCR_PATH_REASON=page-raster-fallback")
@@ -1974,7 +1977,9 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *
         logger.info("OCR_PATH=rapidocr-fallback")
         logger.info("RapidOCR OCR produced %d chars", len(rapid_text))
         return (rapid_text, "rapidocr") if return_provider else rapid_text
-    local_text = rapid_text or local_text
+    if rapid_text:
+        local_text = rapid_text
+        local_provider = "rapidocr"
 
     try:
         text = _tesseract_ocr_text(page, timings=timings, page_num=page_num)
@@ -1992,27 +1997,40 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *
         _record_timing(timings, "tesseract_pages", 1)
         _remember_ocr_provider(timings, page_num, "tesseract")
         return (text, "tesseract") if return_provider else text
-    local_text = text or local_text
+    if text:
+        local_text = text
+        local_provider = "tesseract"
 
     if _is_probably_blank_page(page, local_text):
         logger.info("OCR_SKIP_BLANK_PAGE page=%s reason=no_native_text_and_no_visible_content", page_num + 1 if page_num is not None else "?")
-        if local_text:
-            _remember_ocr_provider(timings, page_num, "native")
         final_text = local_text or ""
-        return (final_text, "native") if return_provider else final_text
+        final_provider = local_provider if final_text else "native"
+        if final_text:
+            _remember_ocr_provider(timings, page_num, final_provider)
+        return (final_text, final_provider) if return_provider else final_text
 
     gemini_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
-    if gemini_text and _sufficient_ocr_text(gemini_text):
-        _record_timing(timings, "gemini_pages", 1)
-        _remember_ocr_provider(timings, page_num, "gemini")
-        logger.info("OCR_PATH=gemini-fallback")
-        logger.info("Gemini OCR produced %d chars", len(gemini_text))
-        return (gemini_text, "gemini") if return_provider else gemini_text
+    if gemini_text:
+        logger.info("Gemini OCR API succeeded for page %s", page_num + 1 if page_num is not None else 1)
+        if _sufficient_ocr_text(gemini_text):
+            _record_timing(timings, "gemini_pages", 1)
+            _remember_ocr_provider(timings, page_num, "gemini")
+            logger.info("Gemini OCR quality accepted for page %s", page_num + 1 if page_num is not None else 1)
+            logger.info("Gemini OCR selected=true page=%s", page_num + 1 if page_num is not None else 1)
+            logger.info("OCR_PATH=gemini-fallback")
+            logger.info("Gemini OCR produced %d chars", len(gemini_text))
+            return (gemini_text, "gemini") if return_provider else gemini_text
+        logger.warning(
+            "Gemini OCR quality rejected for page %s; keeping the best local result if available",
+            page_num + 1 if page_num is not None else 1,
+        )
+        logger.info("Gemini OCR selected=false page=%s", page_num + 1 if page_num is not None else 1)
 
-    if local_text:
-        _remember_ocr_provider(timings, page_num, "native")
-    final_text = local_text or gemini_text or ""
-    return (final_text, "native") if return_provider else final_text
+    final_text = local_text or ""
+    final_provider = local_provider if final_text else "native"
+    if final_text and final_provider != "native":
+        _remember_ocr_provider(timings, page_num, final_provider)
+    return (final_text, final_provider) if return_provider else final_text
 
 
 def _ocr_page_worker(page_num: int, page, timings: Dict[str, Any] = None, image_mode: bool = False):

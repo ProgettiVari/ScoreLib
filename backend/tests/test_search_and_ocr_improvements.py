@@ -331,6 +331,26 @@ def test_real_gemini_ocr_case_keeps_provider_for_selected_ocr_text():
     assert chosen_provider == "gemini"
 
 
+def test_gemini_quality_rejected_does_not_return_native_provider_for_gemini_text(monkeypatch):
+    import pdf_processor
+
+    class DummyPage:
+        pass
+
+    monkeypatch.setattr(pdf_processor, "_ocr_direct_image", lambda *args, **kwargs: "")
+    monkeypatch.setattr(pdf_processor, "_extract_text_with_rapidocr", lambda *args, **kwargs: "")
+    monkeypatch.setattr(pdf_processor, "_tesseract_ocr_text", lambda *args, **kwargs: "")
+    monkeypatch.setattr(pdf_processor, "_is_probably_blank_page", lambda *args, **kwargs: False)
+    monkeypatch.setattr(pdf_processor, "_gemini_ocr_page", lambda *args, **kwargs: "testo Gemini")
+    monkeypatch.setattr(pdf_processor, "_sufficient_ocr_text", lambda *args, **kwargs: False)
+
+    result = pdf_processor._ocr_page_text(DummyPage(), timings={}, page_num=3, return_provider=True)
+
+    assert result == ("", "native")
+    assert result[0] != "testo Gemini"
+    assert result[1] != "gemini"
+
+
 def test_calculate_match_quality_prioritizes_phrase_similarity_over_single_word():
     target = "Cristo salvò col Suo prezioso sangue"
     phrase_query = "cristo salvo sangue"
@@ -616,7 +636,8 @@ def test_process_pdf_job_zero_tasks_keeps_completion_logic_consistent(monkeypatc
 
     asyncio.run(_run())
 
-    assert any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+    assert not any(update["payload"].get("status") == "completed" for update in env["job_updates"])
+    assert any(update["payload"].get("status") == "failed" for update in env["job_updates"])
 
 
 def test_process_pdf_job_fails_when_mongo_has_zero_persisted_pages_after_upserts(monkeypatch, tmp_path):
