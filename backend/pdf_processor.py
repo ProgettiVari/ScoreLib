@@ -34,7 +34,29 @@ FAST_OCR_WORD_THRESHOLD = int(os.environ.get("OCR_FAST_WORD_THRESHOLD", "8"))
 VISUAL_SIGNATURE_DPI = int(os.environ.get("OCR_VISUAL_SIGNATURE_DPI", "48"))
 VISUAL_SIGNATURE_GRID = int(os.environ.get("OCR_VISUAL_SIGNATURE_GRID", "16"))
 VISUAL_REUSE_SIMILARITY_THRESHOLD = float(os.environ.get("OCR_VISUAL_REUSE_THRESHOLD", "0.96"))
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+def _load_gemini_api_keys() -> List[str]:
+    parsed: List[str] = []
+    raw = os.environ.get("GEMINI_API_KEYS", "").strip()
+    if raw:
+        parsed.extend(item.strip() for item in raw.split(",") if item.strip())
+
+    single = os.environ.get("GEMINI_API_KEY", "").strip()
+    if single and single not in parsed:
+        parsed.insert(0, single)
+
+    unique: List[str] = []
+    seen = set()
+    for key in parsed:
+        if key and key not in seen:
+            unique.append(key)
+            seen.add(key)
+    return unique
+
+
+GEMINI_API_KEYS = _load_gemini_api_keys()
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_BATCH_SIZE = max(1, int(os.environ.get("GEMINI_BATCH_SIZE", "4")))
 GEMINI_MAX_RETRIES = max(0, int(os.environ.get("GEMINI_MAX_RETRIES", "2")))
@@ -43,6 +65,7 @@ GEMINI_MAX_CONCURRENCY = max(1, int(os.environ.get("GEMINI_MAX_CONCURRENCY", "2"
 _timing_lock = threading.Lock()
 _ocr_context = threading.local()
 _gemini_concurrency_semaphore = threading.Semaphore(GEMINI_MAX_CONCURRENCY)
+_GEMINI_EXHAUSTED_KEYS = set()
 
 
 class GeminiQuotaExceeded(RuntimeError):
@@ -1179,8 +1202,17 @@ def _find_tesseract_binary() -> str:
     )
     return ""
 
+def _gemini_key_candidates() -> List[Tuple[int, str]]:
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    return [
+        (idx, key)
+        for idx, key in enumerate(keys)
+        if key and key not in _GEMINI_EXHAUSTED_KEYS
+    ]
+
+
 def _gemini_is_configured() -> bool:
-    return bool(GEMINI_API_KEY)
+    return bool(GEMINI_API_KEYS or GEMINI_API_KEY)
 
 
 def _render_page_for_gemini(page) -> Optional[bytes]:
@@ -1241,10 +1273,9 @@ def _is_gemini_daily_quota_error(response) -> bool:
 
 def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
     """OCR a single page via Gemini only after local OCR attempts are insufficient.
-    
-    Handles music sheet OCR with proper error categorization and quota management.
-    Uses concurrency semaphore to respect GEMINI_MAX_CONCURRENCY limit.
-    Returns plain text (no JSON parsing from response).
+
+    Uses Gemini key rotation with temporary quota exhaustion tracking to fail over to the next
+    configured API key without mixing page assignments.
     """
     if not _gemini_is_configured():
         return ""
@@ -1254,13 +1285,6 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
         return ""
 
     expected_page = (int(page_num) + 1) if page_num is not None else 1
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    headers = {
-        "x-goog-api-key": GEMINI_API_KEY,
-        "Content-Type": "application/json",
-    }
-    
-    # Prompt optimized for music sheet OCR: preserve structure, accordi, titles, etc.
     prompt = (
         "Trascrivi fedelmente il testo della pagina di spartito musicale. "
         "MANTIENI: titolo brano, testo, accordi (inclusi con basso, ad es. RE/Fa#), "
@@ -1270,7 +1294,7 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
         "Se qualcosa non è leggibile, scrivi [ILLEGIBILE] instead of guessing. "
         "Ritorna SOLO il testo OCR, niente JSON, niente formattazione extra."
     )
-    
+
     payload = {
         "contents": [{
             "parts": [
@@ -1280,164 +1304,150 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
         }],
     }
 
-    quota_exhausted = False
-    for attempt in range(1, GEMINI_MAX_RETRIES + 2):
-        start = time.perf_counter()        
-        # Respect concurrency limit
-        acquired = _gemini_concurrency_semaphore.acquire(timeout=10.0)
-        if not acquired:
-            logger.warning("Gemini concurrency semaphore timeout for page %s", expected_page)
-            return ""
-        
-        try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=GEMINI_REQUEST_TIMEOUT_SECONDS)
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
-            
-            # Categorize response status
-            if response.status_code == 429:
-                retry_after = _extract_retry_after(dict(response.headers))
-                response_text = (response.text or "")[:1000]
-                daily_quota = _is_gemini_daily_quota_error(response)
-                logger.warning(
-                    "Gemini rate-limited (429) for page %s, attempt %d/%d daily_quota=%s retry_after=%s",
-                    expected_page, attempt, GEMINI_MAX_RETRIES + 1, daily_quota, retry_after,
-                )
-                if daily_quota:
-                    logger.error(
-                        "Gemini quota exhausted for page %s: %s",
-                        expected_page,
-                        response_text,
-                    )
-                    if timings is not None:
-                        timings["gemini_quota_waiting"] = True
-                        timings["gemini_quota_page"] = page_num
-                        timings["gemini_quota_retry_after"] = retry_after
-                        timings["gemini_quota_reason"] = "daily_quota"
-                    raise GeminiQuotaExceeded(
-                        page_num=page_num,
-                        retry_after=retry_after,
-                        reason="daily_quota",
-                        message=response_text or "Gemini quota exceeded",
-                    )
-                if retry_after is not None:
-                    if timings is not None:
-                        _record_timing(timings, "gemini_retry_after_seconds", retry_after)
-                    logger.warning("Gemini quota retry-after: %.1fs (respecting full duration)", retry_after)
-                    if attempt <= GEMINI_MAX_RETRIES:
-                        time.sleep(retry_after)
-                        continue
-                quota_exhausted = True
-                logger.warning("Gemini quota exhausted for page %s (exceeded retry budget)", expected_page)
+    candidates = _gemini_key_candidates()
+    if not candidates:
+        logger.error("GEMINI_ALL_KEYS_EXHAUSTED page=%s", expected_page)
+        if timings is not None:
+            timings["gemini_quota_waiting"] = True
+            timings["gemini_quota_page"] = page_num
+            timings["gemini_quota_reason"] = "all_keys_exhausted"
+        return ""
+
+    for key_index, api_key in candidates:
+        logger.info("GEMINI_KEY_SELECTED page=%s key_index=%s", expected_page, key_index)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        headers = {
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+
+        for attempt in range(1, GEMINI_MAX_RETRIES + 2):
+            start = time.perf_counter()
+            acquired = _gemini_concurrency_semaphore.acquire(timeout=10.0)
+            if not acquired:
+                logger.warning("Gemini concurrency semaphore timeout for page %s", expected_page)
                 return ""
-            
-            if response.status_code in {400, 401, 403}:
-                # Client error: invalid request or auth
-                logger.warning(
-                    "Gemini client error (status=%s) for page %s: %s",
-                    response.status_code, expected_page, response.text[:200]
-                )
-                return ""
-            
-            if response.status_code == 404:
-                # Model not found or deprecated
-                logger.error(
-                    "Gemini model not found (404): %s. Verify GEMINI_MODEL=%s is available.",
-                    response.text[:200], GEMINI_MODEL
-                )
-                return ""
-            
-            if response.status_code in {500, 503}:
-                # Transient server error: retry with backoff
-                if attempt <= GEMINI_MAX_RETRIES:
-                    sleep_for = min(20.0, 2 ** (attempt - 1) * 1.5)
+
+            try:
+                response = httpx.post(url, json=payload, headers=headers, timeout=GEMINI_REQUEST_TIMEOUT_SECONDS)
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+                if response.status_code == 429:
+                    retry_after = _extract_retry_after(dict(response.headers))
+                    response_text = (response.text or "")[:1000]
+                    daily_quota = _is_gemini_daily_quota_error(response)
                     logger.warning(
-                        "Gemini transient error (status=%s) for page %s, retrying in %.1fs",
-                        response.status_code, expected_page, sleep_for
+                        "Gemini rate-limited (429) for page %s key_index=%s attempt %d/%d daily_quota=%s retry_after=%s",
+                        expected_page, key_index, attempt, GEMINI_MAX_RETRIES + 1, daily_quota, retry_after,
                     )
-                    time.sleep(sleep_for)
-                    continue
-                logger.warning(
-                    "Gemini exceeded retry budget after %d attempts for page %s",
-                    attempt, expected_page
-                )
-                return ""
-            
-            if response.status_code >= 500:
-                # Other 5xx: don't retry, quota likely exhausted
-                logger.warning(
-                    "Gemini server error (status=%s) for page %s",
-                    response.status_code, expected_page
-                )
-                return ""
-            
-            # Success: extract text from response
-            response.raise_for_status()
-            data = response.json()
-            contents = data.get("candidates", [])
-            
-            if not contents or not isinstance(contents, list):
-                logger.warning("Gemini returned empty candidates for page %s", expected_page)
-                return ""
-            
-            # Extract text from first candidate
-            candidate_text = ""
-            for candidate in contents:
-                parts = candidate.get("content", {}).get("parts", [])
-                for part in parts:
-                    text = part.get("text")
-                    if text:
-                        candidate_text = text
+                    if daily_quota:
+                        _GEMINI_EXHAUSTED_KEYS.add(api_key)
+                        logger.error("GEMINI_KEY_QUOTA_EXHAUSTED page=%s key_index=%s", expected_page, key_index)
+                        if timings is not None:
+                            timings["gemini_quota_waiting"] = True
+                            timings["gemini_quota_page"] = page_num
+                            timings["gemini_quota_retry_after"] = retry_after
+                            timings["gemini_quota_reason"] = "daily_quota"
+                        remaining = _gemini_key_candidates()
+                        if remaining:
+                            next_index = remaining[0][0]
+                            logger.warning("GEMINI_KEY_ROTATE page=%s from=%s to=%s", expected_page, key_index, next_index)
+                            break
+                        logger.error("GEMINI_ALL_KEYS_EXHAUSTED page=%s", expected_page)
+                        if timings is not None:
+                            timings["gemini_quota_waiting"] = True
+                            timings["gemini_quota_page"] = page_num
+                            timings["gemini_quota_reason"] = "all_keys_exhausted"
+                        return ""
+
+                    if retry_after is not None:
+                        if timings is not None:
+                            _record_timing(timings, "gemini_retry_after_seconds", retry_after)
+                        logger.warning("Gemini retry-after: %.1fs for key_index=%s", retry_after, key_index)
+                        if attempt <= GEMINI_MAX_RETRIES:
+                            time.sleep(retry_after)
+                            continue
+
+                    logger.warning("Gemini 429 for page %s key_index=%s exceeded retry budget", expected_page, key_index)
+                    return ""
+
+                if response.status_code in {400, 401, 403}:
+                    logger.warning("Gemini client error (status=%s) for page %s key_index=%s: %s", response.status_code, expected_page, key_index, response.text[:200])
+                    return ""
+
+                if response.status_code == 404:
+                    logger.error("Gemini model not found (404): %s. Verify GEMINI_MODEL=%s is available.", response.text[:200], GEMINI_MODEL)
+                    return ""
+
+                if response.status_code in {500, 503}:
+                    if attempt <= GEMINI_MAX_RETRIES:
+                        sleep_for = min(20.0, 2 ** (attempt - 1) * 1.5)
+                        logger.warning("Gemini transient error (status=%s) for page %s key_index=%s, retrying in %.1fs", response.status_code, expected_page, key_index, sleep_for)
+                        time.sleep(sleep_for)
+                        continue
+                    logger.warning("Gemini exceeded retry budget after %d attempts for page %s key_index=%s", attempt, expected_page, key_index)
+                    return ""
+
+                if response.status_code >= 500:
+                    logger.warning("Gemini server error (status=%s) for page %s key_index=%s", response.status_code, expected_page, key_index)
+                    return ""
+
+                response.raise_for_status()
+                data = response.json()
+                contents = data.get("candidates", [])
+                if not contents or not isinstance(contents, list):
+                    logger.warning("Gemini returned empty candidates for page %s key_index=%s", expected_page, key_index)
+                    return ""
+
+                candidate_text = ""
+                for candidate in contents:
+                    parts = candidate.get("content", {}).get("parts", [])
+                    for part in parts:
+                        text = part.get("text")
+                        if text:
+                            candidate_text = text
+                            break
+                    if candidate_text:
                         break
-                if candidate_text:
-                    break
-            
-            if not candidate_text:
-                logger.warning("Gemini returned no text content for page %s", expected_page)
-                return ""
-            
-            # Validate response is usable
-            cleaned = candidate_text.strip()
-            if not cleaned:
-                logger.warning("Gemini response empty after stripping for page %s", expected_page)
-                return ""
-            
-            if timings is not None:
-                _record_timing(timings, "gemini_ms", elapsed_ms)
-                _record_timing(timings, "gemini_attempt", attempt)
-            
-            logger.info("Gemini OCR succeeded for page %s in %.0f ms", expected_page, elapsed_ms)
-            return cleaned
-        
-        except GeminiQuotaExceeded:
-            raise
 
-        except httpx.TimeoutException:
-            logger.warning(
-                "Gemini request timeout for page %s (timeout=%.0fs), attempt %d/%d",
-                expected_page, GEMINI_REQUEST_TIMEOUT_SECONDS, attempt, GEMINI_MAX_RETRIES + 1
-            )
-            if attempt <= GEMINI_MAX_RETRIES:
-                sleep_for = min(15.0, 2 ** (attempt - 1) * 1.0)
-                time.sleep(sleep_for)
-                continue
-            return ""
-        
-        except Exception as exc:
-            logger.warning(
-                "Gemini OCR exception for page %s: %s (type=%s), attempt %d/%d",
-                expected_page, exc, type(exc).__name__, attempt, GEMINI_MAX_RETRIES + 1
-            )
-            if attempt <= GEMINI_MAX_RETRIES:
-                sleep_for = min(15.0, 2 ** (attempt - 1) * 1.0)
-                time.sleep(sleep_for)
-                continue
-            return ""
-        
-        finally:
-            _gemini_concurrency_semaphore.release()
+                if not candidate_text:
+                    logger.warning("Gemini returned no text content for page %s key_index=%s", expected_page, key_index)
+                    return ""
 
-    if quota_exhausted:
-        logger.error("Gemini quota exhausted for page %s; further OCR requests will fail", expected_page)
+                cleaned = candidate_text.strip()
+                if not cleaned:
+                    logger.warning("Gemini response empty after stripping for page %s key_index=%s", expected_page, key_index)
+                    return ""
+
+                if timings is not None:
+                    _record_timing(timings, "gemini_ms", elapsed_ms)
+                    _record_timing(timings, "gemini_attempt", attempt)
+
+                logger.info("Gemini OCR succeeded for page %s key_index=%s in %.0f ms", expected_page, key_index, elapsed_ms)
+                return cleaned
+
+            except GeminiQuotaExceeded:
+                raise
+            except httpx.TimeoutException:
+                logger.warning("Gemini request timeout for page %s key_index=%s (timeout=%.0fs), attempt %d/%d", expected_page, key_index, GEMINI_REQUEST_TIMEOUT_SECONDS, attempt, GEMINI_MAX_RETRIES + 1)
+                if attempt <= GEMINI_MAX_RETRIES:
+                    time.sleep(min(15.0, 2 ** (attempt - 1) * 1.0))
+                    continue
+                return ""
+            except Exception as exc:
+                logger.warning("Gemini OCR exception for page %s key_index=%s: %s (type=%s), attempt %d/%d", expected_page, key_index, exc, type(exc).__name__, attempt, GEMINI_MAX_RETRIES + 1)
+                if attempt <= GEMINI_MAX_RETRIES:
+                    time.sleep(min(15.0, 2 ** (attempt - 1) * 1.0))
+                    continue
+                return ""
+            finally:
+                _gemini_concurrency_semaphore.release()
+
+    logger.error("GEMINI_ALL_KEYS_EXHAUSTED page=%s", expected_page)
+    if timings is not None:
+        timings["gemini_quota_waiting"] = True
+        timings["gemini_quota_page"] = page_num
+        timings["gemini_quota_reason"] = "all_keys_exhausted"
     return ""
 
 
