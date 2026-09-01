@@ -2063,6 +2063,33 @@ async def _resume_waiting_gemini_jobs() -> None:
         safe_create_task(process_pdf_job(j["id"]))
 
 
+async def _verify_expected_pdf_pages(pdf_id: str, expected_pages: List[int]) -> Tuple[bool, List[int], List[int], List[int]]:
+    """Check that every expected page for this PDF really exists in MongoDB."""
+    normalized_expected = sorted({int(page) for page in expected_pages if page is not None})
+    if not normalized_expected:
+        return True, [], [], []
+
+    try:
+        saved_records = await db.pdf_pages.find(
+            {"pdf_id": pdf_id, "page": {"$in": normalized_expected}},
+            {"_id": 0, "page": 1},
+        ).to_list(10000)
+    except Exception as exc:
+        logger.error("PDF.PAGES_WRITE_VERIFY_ERROR pdf=%s error=%s", pdf_id, repr(exc))
+        return False, [], normalized_expected, normalized_expected
+
+    saved_pages = sorted({int(record.get("page")) for record in saved_records if isinstance(record.get("page"), int)})
+    missing_pages = sorted(set(normalized_expected) - set(saved_pages))
+    logger.info(
+        "PDF.PAGES_WRITE_VERIFY pdf=%s expected=%s saved=%s missing=%s",
+        pdf_id,
+        normalized_expected,
+        saved_pages,
+        missing_pages,
+    )
+    return (not missing_pages), saved_pages, missing_pages, normalized_expected
+
+
 async def _set_job_status(job_id: str, status: str, **extra) -> None:
     patch = {"status": status, "updated_at": iso_now()}
     patch.update(extra)
@@ -2280,6 +2307,7 @@ async def process_pdf_job(job_id):
                 )
 
             if page_write_tasks:
+                logger.info("PDF.PAGES_WRITE_START pdf=%s expected_pages=%s", pdf["id"], [page_num for page_num, _ in page_write_tasks])
                 results = await asyncio.gather(
                     *(update_task for _, update_task in page_write_tasks),
                     return_exceptions=True,
@@ -2305,6 +2333,25 @@ async def process_pdf_job(job_id):
                         {"id": job_id},
                         {"$set": {"status": "failed", "error": f"Mongo page write failed for pdf {pdf['id']}" , "updated_at": iso_now()}},
                     )
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "failed", "error": f"Mongo page write failed for pdf {pdf['id']}", "updated_at": iso_now()}})
+                    return
+
+                expected_pages = [page_num for page_num, _ in page_write_tasks]
+                ok, saved_pages, missing_pages, _ = await _verify_expected_pdf_pages(pdf["id"], expected_pages)
+                logger.info("PDF.PAGES_WRITE_RESULT pdf=%s expected=%s saved=%s missing=%s", pdf["id"], expected_pages, saved_pages, missing_pages)
+                if not ok:
+                    logger.error(
+                        "PDF.PAGES_WRITE_FAILED pdf=%s expected=%s saved=%s missing=%s",
+                        pdf["id"],
+                        expected_pages,
+                        saved_pages,
+                        missing_pages,
+                    )
+                    await db.upload_jobs.update_one(
+                        {"id": job_id},
+                        {"$set": {"status": "failed", "error": f"Mongo page persistence verification failed for pdf {pdf['id']} missing_pages={missing_pages}", "updated_at": iso_now()}},
+                    )
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "failed", "error": f"Mongo page persistence verification failed for pdf {pdf['id']} missing_pages={missing_pages}", "updated_at": iso_now()}})
                     return
 
             logger.info(f"PDF {pdf['id']} indexing complete")
