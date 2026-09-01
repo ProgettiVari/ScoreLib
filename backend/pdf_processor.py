@@ -2334,11 +2334,11 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_page = {
-                    executor.submit(_ocr_page_worker, page_num, page, timings, image_mode=image_mode): (page_num, cleaned, page_info)
+                    executor.submit(_ocr_page_worker, page_num, page, timings, image_mode=image_mode): (page_num, cleaned, page_info, image_mode)
                     for page_num, page, cleaned, page_info, image_mode in ocr_candidates
                 }
                 for future in as_completed(future_to_page):
-                    page_num, cleaned, page_info = future_to_page[future]
+                    page_num, cleaned, page_info, image_mode = future_to_page[future]
                     ocr_text = ""
                     ocr_ms = 0.0
                     ocr_provider = "native"

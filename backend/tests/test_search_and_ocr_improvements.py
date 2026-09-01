@@ -488,6 +488,56 @@ def test_gemini_C_mapping_preserves_page_number(monkeypatch):
     assert ms >= 0
 
 
+def test_extract_pages_mixed_pdf_keeps_image_mode_for_ocr_candidates(monkeypatch):
+    """Regression: mixed PDF with native + blank + image pages must not crash on image_mode."""
+    import io
+    import pdf_processor
+    from PIL import Image, ImageDraw
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as reportlab_canvas
+
+    buf = io.BytesIO()
+    c = reportlab_canvas.Canvas(buf, pagesize=(300, 420))
+    c.drawString(40, 360, "Pagina 1 testo nativo")
+    c.showPage()
+    c.showPage()
+
+    image = Image.new("RGB", (180, 120), "white")
+    drawer = ImageDraw.Draw(image)
+    drawer.rectangle((10, 10, 170, 110), outline="black", width=4)
+    drawer.text((20, 40), "P3 raster", fill="black")
+    c.drawImage(ImageReader(image), 60, 200, width=180, height=120)
+    c.showPage()
+
+    image2 = Image.new("RGB", (180, 120), "white")
+    drawer2 = ImageDraw.Draw(image2)
+    drawer2.rectangle((10, 10, 170, 110), outline="black", width=4)
+    drawer2.text((20, 40), "P4 raster", fill="black")
+    c.drawImage(ImageReader(image2), 60, 200, width=180, height=120)
+    c.save()
+    pdf_bytes = buf.getvalue()
+
+    seen_modes = []
+
+    def mock_ocr_worker(page_num, page, timings=None, image_mode=False):
+        seen_modes.append((page_num, image_mode))
+        if timings is not None:
+            timings.setdefault("ocr_provider_by_page", {})[page_num] = "gemini"
+        return f"ocr text page {page_num + 1}", 12.0, "gemini"
+
+    monkeypatch.setattr(pdf_processor, "_ocr_page_worker", mock_ocr_worker)
+
+    pages_text, raw_texts, total_pages, used_ocr, page_labels = pdf_processor.extract_pages(pdf_bytes)
+
+    assert total_pages == 4
+    assert len(seen_modes) >= 2
+    assert all(isinstance(mode, bool) for _, mode in seen_modes)
+    assert any(mode is True for _, mode in seen_modes)
+    assert any("ocr text page 3" in text for text in pages_text)
+    assert any("ocr text page 4" in text for text in pages_text)
+    assert used_ocr is True
+
+
 def test_gemini_D_empty_response_fails_gracefully(monkeypatch):
     """Test D: Empty Gemini response doesn't corrupt the job."""
     import pdf_processor
