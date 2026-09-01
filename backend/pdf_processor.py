@@ -916,6 +916,34 @@ def _choose_page_text(native_text: str, ocr_text: str, prefer_ocr: bool = False)
     return cleaned_native
 
 
+def _provider_for_final_text(native_text: str, ocr_text: str, chosen_text: str, ocr_provider: str = "native") -> str:
+    """Return the provider corresponding to the text that was actually kept."""
+    cleaned_native = clean_pdf_text(native_text)
+    cleaned_ocr = clean_pdf_text(ocr_text)
+    cleaned_chosen = clean_pdf_text(chosen_text)
+
+    if not cleaned_chosen:
+        return "native"
+    if not cleaned_ocr:
+        return "native"
+    if cleaned_chosen == cleaned_native and cleaned_chosen != cleaned_ocr:
+        return "native"
+    if cleaned_chosen == cleaned_ocr and cleaned_chosen != cleaned_native:
+        return ocr_provider or "native"
+    if cleaned_chosen == cleaned_native == cleaned_ocr:
+        return ocr_provider if ocr_provider and ocr_provider != "native" else "native"
+
+    native_words = _count_text_words(cleaned_native)
+    ocr_words = _count_text_words(cleaned_ocr)
+    chosen_words = _count_text_words(cleaned_chosen)
+
+    if native_words >= ocr_words and chosen_words <= native_words:
+        return "native"
+    if ocr_provider and ocr_provider != "native":
+        return ocr_provider
+    return "native"
+
+
 def _has_boilerplate_text(cleaned_text: str) -> bool:
     if not cleaned_text:
         return False
@@ -1865,6 +1893,36 @@ def _remember_ocr_provider(timings: Optional[Dict[str, Any]], page_num: Optional
     timings["ocr_provider_by_page"][key] = provider
 
 
+def _is_probably_blank_page(page, cleaned_text: str = "") -> bool:
+    """Return True only for pages with no substantive text or image content.
+
+    This is intentionally conservative: pages with any text blocks or visible image content
+    are kept available for OCR/Gemini rather than being treated as blank.
+    """
+    text = cleaned_text or (page.get_text("text") or "") if page is not None else ""
+    cleaned = clean_pdf_text(text)
+    word_count = _count_text_words(cleaned)
+
+    try:
+        text_dict = page.get_text("dict") or {}
+    except Exception:
+        text_dict = {}
+    blocks = text_dict.get("blocks", []) if isinstance(text_dict, dict) else []
+    text_blocks = sum(1 for b in blocks if b.get("type") == 0)
+    image_blocks = sum(1 for b in blocks if b.get("type") == 1)
+
+    try:
+        image_xobjs = bool(page.get_images(full=True))
+    except Exception:
+        image_xobjs = False
+
+    if text_blocks > 0 or image_blocks > 0 or image_xobjs:
+        return False
+    if word_count > 0:
+        return False
+    return True
+
+
 def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -> str:
     """OCR wrapper preserving the current local pipeline and adding Gemini as final fallback."""
     local_text = ""
@@ -1916,6 +1974,12 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None) -
         _remember_ocr_provider(timings, page_num, "tesseract")
         return text
     local_text = text or local_text
+
+    if _is_probably_blank_page(page, local_text):
+        logger.info("OCR_SKIP_BLANK_PAGE page=%s reason=no_native_text_and_no_visible_content", page_num + 1 if page_num is not None else "?")
+        if local_text:
+            _remember_ocr_provider(timings, page_num, "native")
+        return local_text or ""
 
     gemini_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
     if gemini_text and _sufficient_ocr_text(gemini_text):
@@ -2315,17 +2379,18 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
 
             if ocr_text:
                 chosen = _choose_page_text(cleaned, ocr_text, prefer_ocr=image_mode)
+                final_provider = _provider_for_final_text(cleaned, ocr_text, chosen, ocr_provider)
                 if chosen != cleaned:
                     used_ocr = True
                     page_info["ocr_used"] = True
-                    page_info["ocr_provider"] = ocr_provider
+                    page_info["ocr_provider"] = final_provider
                     logger.info(
                         "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words) provider=%s",
                         page_num + 1,
                         _count_text_words(cleaned),
                         _count_text_words(clean_pdf_text(ocr_text)),
                         _count_text_words(chosen),
-                        ocr_provider,
+                        final_provider,
                     )
                 else:
                     page_info["ocr_provider"] = "native"
@@ -2353,7 +2418,8 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
 
                     if ocr_text:
                         chosen = _choose_page_text(cleaned, ocr_text, prefer_ocr=image_mode)
-                        page_info["ocr_provider"] = timings.get("ocr_provider_by_page", {}).get(page_num, "native") if timings else "native"
+                        final_provider = _provider_for_final_text(cleaned, ocr_text, chosen, ocr_provider)
+                        page_info["ocr_provider"] = final_provider
                         if chosen != cleaned:
                             used_ocr = True
                             page_info["ocr_used"] = True
@@ -2363,7 +2429,7 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                                 _count_text_words(cleaned),
                                 _count_text_words(clean_pdf_text(ocr_text)),
                                 _count_text_words(chosen),
-                                page_info["ocr_provider"],
+                                final_provider,
                             )
                         pages_text[page_num] = chosen
                     page_info["ocr_ms"] = ocr_ms
