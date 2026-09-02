@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 import io
 from pathlib import Path
 
@@ -23,6 +24,57 @@ def test_build_content_signature_is_stable_for_equivalent_text():
 
     assert _content_signature_similarity(signature_a, signature_b) >= 0.8
     assert build_content_signature("") == ""
+
+
+def test_make_snippet_localizes_minor_ocr_difference():
+    from pdf_processor import make_snippet
+
+    snippet = make_snippet("O Signore, Ti 4mo con tutto il cuore", "Ti amo")
+
+    assert snippet
+    assert "Ti 4mo" in snippet
+
+
+def test_format_search_result_keeps_ocr_snippet_non_empty():
+    import server
+
+    result = server.format_search_result(
+        {"id": "pdf_ocr", "title": "Scansione"},
+        {"page": 1, "text": "O Signore, Ti 4mo con tutto il cuore", "text_raw": "O Signore, Ti 4mo con tutto il cuore"},
+        "Ti amo",
+        90,
+    )
+
+    assert result["snippet"]
+    assert result["has_indexed_text"] is True
+    assert result["is_ocr_fallback_snippet"] is True
+
+
+def test_search_context_returns_fuzzy_ocr_snippet(monkeypatch):
+    import server
+
+    class Pages:
+        async def find_one(self, query, projection):
+            assert query == {"pdf_id": "pdf_ocr", "page": 1}
+            return {
+                "pdf_id": "pdf_ocr",
+                "page": 1,
+                "text": "O Signore, Ti 4mo con tutto il cuore",
+                "text_raw": "O Signore, Ti 4mo con tutto il cuore",
+                "ocr_provider": "local",
+            }
+
+    fake_db = type("FakeDB", (), {"pdf_pages": Pages()})()
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "_get_active_user_id", lambda user_id: asyncio.sleep(0, result=user_id))
+    monkeypatch.setattr(server, "_user_can_access_pdf", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+
+    result = asyncio.run(server.get_pdf_search_context("pdf_ocr", q="Ti amo", page=1, user_id="user-1"))
+
+    assert result["snippet"]
+    assert "Ti 4mo" in result["snippet"]
+    assert result["has_indexed_text"] is True
+    assert result["is_ocr_fallback_snippet"] is True
 
 
 def test_visual_signature_similarity_distinguishes_obviously_different_pages():

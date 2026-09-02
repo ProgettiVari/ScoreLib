@@ -1719,9 +1719,27 @@ def _select_readable_snippet(raw_snippet: str, maxlen: int = 200) -> str:
     return tmp[:maxlen].rstrip() + " …"
 
 
+def _page_indexed_text(pg: dict) -> str:
+    return str(pg.get("text") or pg.get("text_raw") or "").strip()
+
+
+def _guaranteed_page_snippet(pg: dict, raw_snippet: str) -> str:
+    source_text = _page_indexed_text(pg)
+    if not source_text:
+        return ""
+    sanitized = __import__("pdf_processor").sanitize_snippet_for_api(raw_snippet) if raw_snippet else ""
+    if sanitized:
+        return sanitized
+    readable = _select_readable_snippet(raw_snippet or source_text)
+    if readable:
+        return readable
+    return re.sub(r"\s+", " ", source_text).strip()[:200]
+
+
 def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optional[str] = None, source: str = "personal", match_in: str = "content") -> dict:
     # Build raw snippet (prefer explicit snippet param, else generate from page text)
-    raw_snippet = snippet if snippet is not None else make_snippet(pg.get("text_raw", pg.get("text", "")), q)
+    indexed_text = _page_indexed_text(pg)
+    raw_snippet = snippet if snippet is not None else make_snippet(indexed_text, q)
     # First try the aggressive sanitizer (removes chords/boilerplate)
     sanitized = __import__("pdf_processor").sanitize_snippet_for_api(raw_snippet) if raw_snippet else ""
 
@@ -1733,6 +1751,8 @@ def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optiona
         fallback_snippet = _select_readable_snippet(raw_snippet)
         if fallback_snippet:
             final_snippet = fallback_snippet
+    if not final_snippet and indexed_text:
+        final_snippet = _guaranteed_page_snippet(pg, raw_snippet)
 
     return {
         "pdf_id": p["id"],
@@ -1746,6 +1766,8 @@ def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optiona
         "page_label": pg.get("page_label", pg["page"]),
         # Provide sanitized snippet (or fallback light-clean preview)
         "snippet": final_snippet,
+        "has_indexed_text": bool(indexed_text),
+        "is_ocr_fallback_snippet": bool(indexed_text and raw_snippet and normalize_search_query(q) not in normalize_search_query(raw_snippet)),
         "query": q,
         "match_text": q,
         "score": score,
@@ -1769,12 +1791,13 @@ async def get_pdf_search_context(
         raise HTTPException(status_code=403, detail="Accesso negato")
     pg = await db.pdf_pages.find_one({"pdf_id": pdf_id, "page": page}, {"_id": 0})
     if not pg:
-        return {"pdf_id": pdf_id, "page": page, "query": q, "snippet": "", "match_text": q, "has_indexed_text": False}
+        return {"pdf_id": pdf_id, "page": page, "query": q, "snippet": "", "match_text": q, "has_indexed_text": False, "is_ocr_fallback_snippet": False}
     raw_q = normalize_search_query(q).strip()
-    raw_snippet = make_snippet(pg.get("text_raw", pg.get("text", "")), raw_q)
-    snippet = __import__("pdf_processor").sanitize_snippet_for_api(raw_snippet) if raw_snippet else ""
-    if not snippet or normalize_search_query(raw_q) not in normalize_search_query(snippet):
-        snippet = _select_readable_snippet(raw_snippet)
+    indexed_text = _page_indexed_text(pg)
+    raw_snippet = make_snippet(indexed_text, raw_q)
+    snippet = _guaranteed_page_snippet(pg, raw_snippet)
+    if not snippet:
+        snippet = _select_readable_snippet(raw_snippet) or _guaranteed_page_snippet(pg, indexed_text)
     return {
         "pdf_id": pdf_id,
         "page": pg.get("page", page),
@@ -1782,7 +1805,8 @@ async def get_pdf_search_context(
         "query": raw_q,
         "match_text": raw_q,
         "snippet": snippet,
-        "has_indexed_text": bool(pg.get("text") or pg.get("text_raw")),
+        "has_indexed_text": bool(indexed_text),
+        "is_ocr_fallback_snippet": bool(indexed_text and raw_snippet and normalize_search_query(raw_q) not in normalize_search_query(raw_snippet)),
         "ocr_provider": pg.get("ocr_provider", ""),
     }
 

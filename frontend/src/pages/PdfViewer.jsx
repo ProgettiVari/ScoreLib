@@ -76,6 +76,10 @@ function rangeFromScroll(scrollY, viewportHeight, slotHeight, numPages, toolbarO
   };
 }
 
+export function shouldShowIndexedSearchContext(searchActive, context) {
+  return Boolean(searchActive && context && (context.snippet || context.has_indexed_text));
+}
+
 export default function PdfViewer() {
   const { id } = useParams();
   const [params] = useSearchParams();
@@ -537,7 +541,7 @@ export default function PdfViewer() {
       />
 
       <div ref={containerRef} className="flex-1 flex flex-col items-center py-8 overflow-x-visible">
-        {search.isSearchActive && searchContext?.snippet && (
+        {shouldShowIndexedSearchContext(search.isSearchActive, searchContext) && (
           <div
             className="w-full border border-rule rounded-md bg-card p-4 mb-5 text-sm"
             style={{ maxWidth: containerWidth }}
@@ -545,7 +549,7 @@ export default function PdfViewer() {
           >
             <div className="overline mb-2">Risultato indicizzato · PAG {searchContext.page_label || searchContext.page}</div>
             <p className="text-muted2 leading-relaxed">
-              {highlightText(searchContext.snippet, searchContext.query || search.query, { defaultMarkClass: "hl" })}
+              {highlightText(searchContext.snippet || "Contesto indicizzato disponibile", searchContext.query || search.query, { defaultMarkClass: "hl" })}
             </p>
           </div>
         )}

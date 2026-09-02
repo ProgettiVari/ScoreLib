@@ -2754,6 +2754,43 @@ def _normalize_text_and_map_for_snippet(text: str) -> Tuple[str, List[int]]:
     return normalized, final_map
 
 
+def _find_fuzzy_query_span(
+    normalized_text: str,
+    map_norm_to_orig: List[int],
+    normalized_query: str,
+) -> Optional[Tuple[int, int]]:
+    if not normalized_text or not map_norm_to_orig or not normalized_query:
+        return None
+
+    query_tokens = re.findall(r"[a-z0-9']+", normalized_query.lower())
+    text_tokens = list(re.finditer(r"[a-z0-9']+", normalized_text.lower()))
+    if not query_tokens or not text_tokens:
+        return None
+
+    best = None
+    max_window = min(len(text_tokens), len(query_tokens) + 3)
+    for window_len in range(len(query_tokens), max_window + 1):
+        for start_idx in range(len(text_tokens) - window_len + 1):
+            window = text_tokens[start_idx : start_idx + window_len]
+            matching = sum(
+                1
+                for query_token, document_token in zip(query_tokens, window)
+                if _token_fuzzy_match(query_token, document_token.group(0))
+            )
+            score = matching / len(query_tokens)
+            if score < 0.7:
+                continue
+            span = (window[0].start(), window[-1].end())
+            candidate = (score, -window_len, -start_idx, span)
+            if best is None or candidate[:3] > best[:3]:
+                best = candidate
+
+    if best is None:
+        return None
+    start_norm, end_norm = best[3]
+    return map_norm_to_orig[start_norm], map_norm_to_orig[end_norm - 1] + 1
+
+
 def make_snippet(text: str, query: str, length: int = 200) -> str:
     """Return a snippet of `text` around the first occurrence of `query`.
     Removes decorative numbers (~N~) to avoid confusing the user.
@@ -2797,18 +2834,24 @@ def make_snippet(text: str, query: str, length: int = 200) -> str:
         end = min(len(text), end_orig + length)
         snippet = text[start:end]
     else:
-        # Fallback: previous behavior trying raw lowercase find
-        lower = text.lower()
-        q_raw = q.lower()
-        idx2 = lower.find(q_raw)
-        if idx2 < 0:
-            first = q_raw.split()[0] if q_raw.split() else q_raw
-            idx2 = lower.find(first)
-        if idx2 < 0:
-            return text[:length].strip()
-        start = max(0, idx2 - length // 3)
-        end = min(len(text), idx2 + length)
-        snippet = text[start:end]
+        fuzzy_span = _find_fuzzy_query_span(txt_norm_l, map_norm_to_orig, q_norm_l)
+        if fuzzy_span is not None:
+            start_orig, end_orig = fuzzy_span
+            start = max(0, start_orig - length // 3)
+            end = min(len(text), end_orig + length)
+            snippet = text[start:end]
+        else:
+            lower = text.lower()
+            q_raw = q.lower()
+            idx2 = lower.find(q_raw)
+            if idx2 < 0:
+                first = q_raw.split()[0] if q_raw.split() else q_raw
+                idx2 = lower.find(first)
+            if idx2 < 0:
+                return text[:length].strip()
+            start = max(0, idx2 - length // 3)
+            end = min(len(text), idx2 + length)
+            snippet = text[start:end]
 
     # Preserve explicit linebreak positions in snippets using a visible marker (U+23CE).
     snippet = re.sub(r"\s*\r?\n+\s*", ".\u23CE", snippet)
