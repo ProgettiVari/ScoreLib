@@ -11,6 +11,7 @@ import psutil
 import shutil
 import subprocess
 import time
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -2203,6 +2204,13 @@ async def process_pdf_job(job_id):
         if fpath.exists():
             pdf_bytes = fpath.read_bytes()
             
+            # Log initial memory usage
+            try:
+                rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                logger.info("PDF.PROCESS_MEMORY rss_mb=%.1f stage=start pdf=%s", rss_mb, pdf["id"])
+            except Exception:
+                pass
+            
             # Compress PDF in background if not already compressed
             if not pdf.get("compressed"):
                 compress_start = time.perf_counter()
@@ -2218,9 +2226,26 @@ async def process_pdf_job(job_id):
                     logger.info("PDF.COMPRESS_SKIP pdf=%s size=%d (no benefit) ms=%.1f", pdf["id"], len(pdf_bytes), compress_ms)
                     await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"compressed": False, "updated_at": iso_now()}})
             
+            # Check for already-saved pages from previous resume
+            try:
+                saved_records = await db.pdf_pages.find(
+                    {"pdf_id": pdf["id"], "text": {"$ne": ""}},
+                    {"_id": 0, "page": 1},
+                ).to_list(10000)
+                saved_pages_set = {int(record.get("page")) for record in saved_records if isinstance(record.get("page"), int)}
+            except Exception as exc:
+                logger.warning("PDF.PROCESS_RESUME_CHECK_FAILED pdf=%s error=%s", pdf["id"], repr(exc))
+                saved_pages_set = set()
+            
             resume_completed_pages = job.get("gemini_completed_pages") or []
             resume_pending_pages = job.get("gemini_pending_pages") or []
             resume_quota_page = job.get("gemini_quota_page")
+            
+            # Merge with saved pages (in case of previous crashes)
+            if saved_pages_set:
+                resume_completed_pages = list(set(resume_completed_pages) | saved_pages_set)
+                logger.info("PDF.PROCESS_RESUME pdf=%s saved_pages=%d pending_pages=%d", pdf["id"], len(saved_pages_set), len(resume_pending_pages))
+            
             original_total = fitz.open(fpath).page_count if fpath.exists() else 0
             completed_pages, pending_pages = _gemini_quota_resume_ranges(
                 total_pages=original_total,
@@ -2258,6 +2283,14 @@ async def process_pdf_job(job_id):
                 known_page_records,
                 timings,
             )
+            
+            # Log memory after OCR extraction
+            try:
+                rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                logger.info("PDF.PROCESS_MEMORY rss_mb=%.1f stage=after_extract pdf=%s", rss_mb, pdf["id"])
+            except Exception:
+                pass
+            
             if active_page_numbers:
                 page_map = active_page_numbers
             else:
@@ -2357,6 +2390,7 @@ async def process_pdf_job(job_id):
                         return_exceptions=True,
                     )
                     failed_writes = []
+                    successful_pages = []
                     for (page_num, _), result in zip(page_write_tasks, results):
                         if isinstance(result, Exception):
                             failed_writes.append((page_num, result))
@@ -2374,6 +2408,19 @@ async def process_pdf_job(job_id):
                                 page_num,
                                 "Mongo update not acknowledged",
                             )
+                        else:
+                            successful_pages.append(page_num)
+                            logger.info("PDF.PAGE_WRITE_OK pdf=%s page=%d", pdf["id"], page_num)
+                    
+                    # Free memory after page writes and garbage collection
+                    del results
+                    gc.collect()
+                    try:
+                        rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                        logger.info("PDF.PROCESS_MEMORY rss_mb=%.1f stage=after_page_writes pdf=%s successful_pages=%d", rss_mb, pdf["id"], len(successful_pages))
+                    except Exception:
+                        pass
+                    
                     if failed_writes:
                         logger.error(
                             "PDF.PAGES_WRITE_FAILED pdf=%s failed_pages=%s total_failed=%d",
@@ -2408,6 +2455,13 @@ async def process_pdf_job(job_id):
 
             logger.info(f"PDF {pdf['id']} indexing complete")
             await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "ready", "pages": total, "page_labels": page_labels}})
+            
+            # Final memory tracking
+            try:
+                rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                logger.info("PDF.PROCESS_MEMORY rss_mb=%.1f stage=complete pdf=%s", rss_mb, pdf["id"])
+            except Exception:
+                pass
             async def backup_drive():
                 try:
                     master = await get_master_drive()

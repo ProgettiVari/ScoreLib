@@ -28,7 +28,8 @@ _rapidocr_available = False
 _tesseract_ready = False
 _pytesseract_module = None
 MAX_OCR_IMAGE_SIZE = 1400
-MAX_PARALLEL_OCR_WORKERS = 3
+# Default to 1 worker on Render to prevent memory exhaustion; configure via MAX_PARALLEL_OCR_WORKERS env var
+MAX_PARALLEL_OCR_WORKERS = max(1, int(os.environ.get("MAX_PARALLEL_OCR_WORKERS", "1")))
 REUSE_TEXT_SIMILARITY_THRESHOLD = float(os.environ.get("OCR_REUSE_TEXT_THRESHOLD", "0.74"))
 FAST_OCR_WORD_THRESHOLD = int(os.environ.get("OCR_FAST_WORD_THRESHOLD", "8"))
 VISUAL_SIGNATURE_DPI = int(os.environ.get("OCR_VISUAL_SIGNATURE_DPI", "48"))
@@ -2412,9 +2413,9 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                 page_labels.append(str(page_num + 1))
 
     if ocr_candidates:
-        max_workers = _choose_ocr_worker_count(ocr_candidates, page_details)
-        logger.info("OCR_POOL workers=%s candidates=%d", max_workers, len(ocr_candidates))
-        logger.info("Starting OCR pool: max_workers=%s candidates=%d", max_workers, len(ocr_candidates))
+        # Process OCR sequentially (1 page at a time) to prevent memory exhaustion on long PDFs
+        max_workers = min(1, MAX_PARALLEL_OCR_WORKERS)  # Force sequential processing
+        logger.info("OCR_BATCH_START total_candidates=%d sequential_mode=True", len(ocr_candidates))
 
         if len(ocr_candidates) == 1:
             page_num, page, cleaned, page_info, image_mode = ocr_candidates[0]
@@ -2425,6 +2426,7 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                 ocr_text, ocr_ms, ocr_provider = "", 0.0, "native"
 
             logger.info("Page %s OCR time: %.0f ms provider=%s", page_num + 1, ocr_ms, ocr_provider)
+            logger.info("OCR_BATCH_DONE pages=[%d]", page_num + 1)
             if timings is not None:
                 _record_timing(timings, "page_ocr_ms", ocr_ms)
 
@@ -2451,38 +2453,35 @@ def extract_pages(pdf_bytes: bytes, timings: Dict[str, Any] = None, known_page_t
                 pages_text[page_num] = chosen
             page_info["ocr_ms"] = ocr_ms
         else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_page = {
-                    executor.submit(_ocr_page_worker, page_num, page, timings, image_mode=image_mode): (page_num, cleaned, page_info, image_mode)
-                    for page_num, page, cleaned, page_info, image_mode in ocr_candidates
-                }
-                for future in as_completed(future_to_page):
-                    page_num, cleaned, page_info, image_mode = future_to_page[future]
-                    ocr_text = ""
-                    ocr_ms = 0.0
-                    ocr_provider = "native"
-                    try:
-                        ocr_text, ocr_ms, ocr_provider = future.result()
-                    except Exception as exc:
-                        logger.warning("Page %s OCR failed in thread: %s", page_num + 1, exc)
+            # Sequential processing: one page at a time to prevent memory exhaustion
+            for batch_idx, (page_num, page, cleaned, page_info, image_mode) in enumerate(ocr_candidates):
+                logger.info("OCR_BATCH_START pages=[%d] batch=%d/%d", page_num + 1, batch_idx + 1, len(ocr_candidates))
+                ocr_text = ""
+                ocr_ms = 0.0
+                ocr_provider = "native"
+                try:
+                    ocr_text, ocr_ms, ocr_provider = _ocr_page_worker(page_num, page, timings, image_mode=image_mode)
+                except Exception as exc:
+                    logger.warning("Page %s OCR failed: %s", page_num + 1, exc)
 
-                    logger.info("Page %s OCR time: %.0f ms provider=%s", page_num + 1, ocr_ms, ocr_provider)
-                    if timings is not None:
-                        _record_timing(timings, "page_ocr_ms", ocr_ms)
+                logger.info("Page %s OCR time: %.0f ms provider=%s", page_num + 1, ocr_ms, ocr_provider)
+                logger.info("OCR_BATCH_DONE pages=[%d] batch=%d/%d", page_num + 1, batch_idx + 1, len(ocr_candidates))
+                if timings is not None:
+                    _record_timing(timings, "page_ocr_ms", ocr_ms)
 
-                    if ocr_text:
-                        chosen, chosen_provider = _choose_page_text(
-                            cleaned,
-                            ocr_text,
-                            native_provider="native",
-                            ocr_provider=ocr_provider,
-                            prefer_ocr=image_mode,
-                        )
-                        page_info["ocr_provider"] = chosen_provider
-                        if chosen != cleaned:
-                            used_ocr = True
-                            page_info["ocr_used"] = True
-                            logger.info(
+                if ocr_text:
+                    chosen, chosen_provider = _choose_page_text(
+                        cleaned,
+                        ocr_text,
+                        native_provider="native",
+                        ocr_provider=ocr_provider,
+                        prefer_ocr=image_mode,
+                    )
+                    page_info["ocr_provider"] = chosen_provider
+                    if chosen != cleaned:
+                        used_ocr = True
+                        page_info["ocr_used"] = True
+                        logger.info(
                                 "Page %s: OCR yielded better text (native %d words, ocr %d words, final %d words) provider=%s",
                                 page_num + 1,
                                 _count_text_words(cleaned),
