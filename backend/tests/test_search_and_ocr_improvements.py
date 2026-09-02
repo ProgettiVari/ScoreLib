@@ -521,6 +521,23 @@ def test_process_pdf_job_resume_skips_completed_pages_and_retries_pending_only(m
     assert any(entry[1] == 31 for entry in page_updates)
 
 
+def test_process_pdf_job_writes_each_page_before_extracting_next(monkeypatch, tmp_path):
+    import server
+
+    env = _build_page_write_test_env(monkeypatch, tmp_path)
+
+    def extract_one_page(*args, **kwargs):
+        env["page_updates"].append(("OCR", None))
+        return (["page"], ["raw"], 1, False, ["1"])
+
+    monkeypatch.setattr(server, "_extract_pages_sync", extract_one_page)
+
+    asyncio.run(server.process_pdf_job("job-1"))
+
+    events = [entry[0] for entry in env["page_updates"]]
+    assert events == ["OCR", "PAGE_OK", "OCR", "PAGE_OK", "OCR", "PAGE_OK", "OCR", "PAGE_OK"]
+
+
 def _build_page_write_test_env(monkeypatch, tmp_path, *, page_failures=None, extracted_pages=None):
     import asyncio
     import io

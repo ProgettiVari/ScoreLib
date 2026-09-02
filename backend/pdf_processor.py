@@ -61,7 +61,9 @@ GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_BATCH_SIZE = max(1, int(os.environ.get("GEMINI_BATCH_SIZE", "4")))
 GEMINI_MAX_RETRIES = max(0, int(os.environ.get("GEMINI_MAX_RETRIES", "2")))
-GEMINI_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_REQUEST_TIMEOUT_SECONDS", "120"))
+GEMINI_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_REQUEST_TIMEOUT_SECONDS", "30"))
+GEMINI_RETRY_MAX_DELAY_SECONDS = float(os.environ.get("GEMINI_RETRY_MAX_DELAY_SECONDS", "5"))
+OCR_GEMINI_MODE = os.environ.get("OCR_GEMINI_MODE", "fallback").strip().lower()
 GEMINI_MAX_CONCURRENCY = max(1, int(os.environ.get("GEMINI_MAX_CONCURRENCY", "2")))
 _timing_lock = threading.Lock()
 _ocr_context = threading.local()
@@ -1430,7 +1432,7 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                             _record_timing(timings, "gemini_retry_after_seconds", retry_after)
                         logger.warning("Gemini retry-after: %.1fs for key_index=%s", retry_after, key_index)
                         if attempt <= GEMINI_MAX_RETRIES:
-                            time.sleep(retry_after)
+                            time.sleep(min(retry_after, GEMINI_RETRY_MAX_DELAY_SECONDS))
                             continue
 
                     logger.warning("Gemini 429 for page %s key_index=%s exceeded retry budget", expected_page, key_index)
@@ -2028,6 +2030,11 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *
     """OCR wrapper preserving the current local pipeline and returning the provider with the selected text."""
     local_text = ""
     local_provider = "native"
+    if OCR_GEMINI_MODE == "prefer":
+        preferred_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
+        if preferred_text and _sufficient_ocr_text(preferred_text):
+            _remember_ocr_provider(timings, page_num, "gemini")
+            return (preferred_text, "gemini") if return_provider else preferred_text
     try:
         direct_text = _ocr_direct_image(page, timings=timings, page_num=page_num)
     except Exception as exc:
@@ -2091,7 +2098,7 @@ def _ocr_page_text(page, timings: Dict[str, Any] = None, page_num: int = None, *
             _remember_ocr_provider(timings, page_num, final_provider)
         return (final_text, final_provider) if return_provider else final_text
 
-    gemini_text = _gemini_ocr_page(page, timings=timings, page_num=page_num)
+    gemini_text = "" if OCR_GEMINI_MODE == "off" else _gemini_ocr_page(page, timings=timings, page_num=page_num)
     if gemini_text:
         logger.info("Gemini OCR API succeeded for page %s", page_num + 1 if page_num is not None else 1)
         if _sufficient_ocr_text(gemini_text):

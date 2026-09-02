@@ -46,7 +46,6 @@ import google_integration as gi
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
-
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -60,14 +59,10 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
 
 MAX_USER_ACTIVE_JOBS = _env_int("MAX_USER_ACTIVE_JOBS", 1, 1)
 MAX_GLOBAL_PROCESSING_JOBS = _env_int("MAX_GLOBAL_PROCESSING_JOBS", 1, 1)
-MAX_USER_UPLOAD_FILES_PER_REQUEST = _env_int(
-    "MAX_USER_UPLOAD_FILES_PER_REQUEST",
-    _env_int("MAX_UPLOAD_FILES_PER_REQUEST", 1, 1),
-    1,
-)
+MAX_USER_UPLOAD_FILES_PER_REQUEST = _env_int("MAX_USER_UPLOAD_FILES_PER_REQUEST", _env_int("MAX_UPLOAD_FILES_PER_REQUEST", 1, 1), 1)
 MAX_USER_UPLOAD_SIZE_BYTES = _env_int("MAX_USER_UPLOAD_SIZE_BYTES", _env_int("MAX_UPLOAD_SIZE_BYTES", 15 * 1024 * 1024, 1), 1)
 MAX_USER_PDF_PAGES = _env_int("MAX_USER_PDF_PAGES", 80, 0)
-MAX_USER_OCR_CANDIDATE_PAGES = _env_int("MAX_USER_OCR_CANDIDATE_PAGES", 40, 0)
+MAX_USER_OCR_CANDIDATE_PAGES = _env_int("MAX_USER_OCR_CANDIDATE_PAGES", 25, 0)
 MAX_ADMIN_UPLOAD_SIZE_BYTES = _env_int("MAX_ADMIN_UPLOAD_SIZE_BYTES", 100 * 1024 * 1024, 1)
 MAX_ADMIN_PDF_PAGES = _env_int("MAX_ADMIN_PDF_PAGES", 0, 0)
 MAX_ADMIN_OCR_CANDIDATE_PAGES = _env_int("MAX_ADMIN_OCR_CANDIDATE_PAGES", 0, 0)
@@ -77,7 +72,6 @@ _pdf_processing_semaphore = asyncio.Semaphore(MAX_GLOBAL_PROCESSING_JOBS)
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
-
 APP_NAME = os.environ.get("APP_NAME", "ScoreLib")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").lower().strip()
 ADMIN_RESET_PASSWORD = os.environ.get("ADMIN_LOG_PASSWORD") or os.environ.get("ADMIN_PASSWORD") or os.environ.get("ADMIN_PASS")
@@ -130,7 +124,6 @@ def _inspect_pdf_for_upload_limits(content: bytes, *, max_pages: int = 0, max_oc
                 raise HTTPException(status_code=400, detail="Il PDF non contiene pagine leggibili")
             if max_pages and page_count > max_pages:
                 raise HTTPException(status_code=413, detail=f"PDF troppo lungo: massimo {max_pages} pagine")
-
             ocr_candidates = 0
             if max_ocr_candidates:
                 for page in doc:
@@ -141,7 +134,6 @@ def _inspect_pdf_for_upload_limits(content: bytes, *, max_pages: int = 0, max_oc
                         ocr_candidates += 1
                     if ocr_candidates > max_ocr_candidates:
                         raise HTTPException(status_code=413, detail=f"Troppe pagine da OCR: massimo {max_ocr_candidates} pagine immagine per upload")
-
             return {"page_count": page_count, "ocr_candidate_pages": ocr_candidates}
     except HTTPException:
         raise
@@ -152,18 +144,13 @@ def _inspect_pdf_for_upload_limits(content: bytes, *, max_pages: int = 0, max_oc
 
 if "<" in FORM_SUBMIT_DEST_EMAIL and ">" in FORM_SUBMIT_DEST_EMAIL:
     FORM_SUBMIT_DEST_EMAIL = FORM_SUBMIT_DEST_EMAIL.split("<")[-1].strip(" >")
-
-# SMTP Configuration (for reliable email sending fallback)
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
-# Enable the email-sending path when a Brevo API key is configured
 SMTP_ENABLED = bool(BREVO_API_KEY)
-
-# One-time login codes: proof that the caller controls the email address,
-# since regular accounts have no password of their own.
+# One-time login codes: proof that the caller controls the email address.
 LOGIN_OTP_TTL_MINUTES = 10
 LOGIN_OTP_MAX_ATTEMPTS = 5
 LOGIN_OTP_RESEND_COOLDOWN_SECONDS = 60
@@ -179,36 +166,24 @@ async def lifespan(app: FastAPI):
             return
         logger.info("Attempting fallback Tesseract install at startup")
         try:
-            subprocess.run(
-                ["apt-get", "update"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            subprocess.run(
-                ["apt-get", "install", "-y", "--no-install-recommends", "tesseract-ocr"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            subprocess.run(["apt-get", "update"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["apt-get", "install", "-y", "--no-install-recommends", "tesseract-ocr"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             logger.info("Fallback Tesseract install succeeded")
         except Exception as exc:
             logger.warning("Fallback Tesseract install failed: %s", exc)
 
     try_install_tesseract()
     tesseract_path = _find_tesseract_binary()
-    logger.info(
-        f"OCR diagnostic: TESSERACT_PATH={os.environ.get('TESSERACT_PATH')}, found={tesseract_path}, which='{shutil.which('tesseract')}'"
-    )
-
+    logger.info(f"OCR diagnostic: TESSERACT_PATH={os.environ.get('TESSERACT_PATH')}, found={tesseract_path}, which='{shutil.which('tesseract')}'")
     await ensure_indexes()
     await seed_admin()
     await migrate_single_owner()
     safe_create_task(access_request_reminder_loop())
-    
     # Startup job recovery
     stuck_jobs = await db.upload_jobs.find({"status": {"$in": ["processing", "queued"]}}).to_list(1000)
     await db.upload_jobs.update_many(
         {"status": {"$in": ["processing", "queued"]}},
-        {"$set": {"status": "queued", "error": "requeued_at_startup", "updated_at": iso_now()}}
+        {"$set": {"status": "queued", "error": "requeued_at_startup", "updated_at": iso_now()}},
     )
     for _j in stuck_jobs:
         safe_create_task(process_pdf_job(_j["id"]))
@@ -223,46 +198,21 @@ app = FastAPI(
     redoc_url="/redoc" if ENABLE_DOCS else None,
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
-
-# Use the same X-Forwarded-For-aware IP resolution used for logging, instead of
-# slowapi's default get_remote_address (which reads request.client.host and, behind
-# Render/Vercel's reverse proxy, would resolve to the proxy's IP for every request —
-# turning one user's failed logins into a rate limit for everybody). This assumes the
-# deployment platform's edge proxy sets/overwrites X-Forwarded-For itself; if the app
-# is ever exposed directly to the internet without a trusted proxy in front of it,
-# this header becomes client-controlled and should not be trusted for rate limiting.
+# Use the same X-Forwarded-For-aware IP resolution used for logging.
 limiter = Limiter(key_func=get_client_ip)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# Configurazione CORS sicura: allow-list esplicita con credenziali
-cors_origins = [
-    "https://scorelib.vercel.app",
-    "https://vercel.app",
-    "https://onrender.com",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    FRONTEND_URL,
-]
+cors_origins = ["https://scorelib.vercel.app", "https://vercel.app", "https://onrender.com", "http://localhost:3000", "http://127.0.0.1:3000", FRONTEND_URL]
 if BACKEND_CORS_ORIGINS:
     cors_origins.extend([origin for origin in BACKEND_CORS_ORIGINS if origin not in cors_origins])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
 SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://api.fontshare.com; connect-src 'self' https://scorelib-backend.onrender.com https://scorelib-backend-docker.onrender.com https://fonts.googleapis.com https://api.fontshare.com https://vercel.live https://*.vercel.app; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'self'"
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://api.fontshare.com; connect-src 'self' https://scorelib-backend.onrender.com https://scorelib-backend-docker.onrender.com https://fonts.googleapis.com https://api.fontshare.com https://vercel.live https://*.vercel.app; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'self'",
 }
 
 @app.middleware("http")
@@ -2460,7 +2410,161 @@ async def _process_pdf_job_locked(job_id):
                     logger.info("PDF.COMPRESS_SKIP pdf=%s size=%d (no benefit) ms=%.1f", pdf["id"], len(pdf_bytes), compress_ms)
                     await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"compressed": False, "updated_at": iso_now()}})
             
-            # Check for already-saved pages from previous resume
+            with fitz.open(fpath) as source_doc:
+                original_total = source_doc.page_count
+                source_labels = source_doc.get_page_labels() or [str(page) for page in range(1, original_total + 1)]
+                saved_records = await db.pdf_pages.find(
+                    {"pdf_id": pdf["id"], "text": {"$ne": ""}},
+                    {"_id": 0, "page": 1},
+                ).to_list(10000)
+                saved_pages = {
+                    int(record["page"])
+                    for record in saved_records
+                    if isinstance(record.get("page"), int) and 1 <= record["page"] <= original_total
+                }
+                saved_pages.update(
+                    int(page)
+                    for page in (job.get("gemini_completed_pages") or [])
+                    if isinstance(page, int) and 1 <= page <= original_total
+                )
+                pending_pages = [page for page in range(1, original_total + 1) if page not in saved_pages]
+                logger.info(
+                    "PDF.PROCESS_RESUME pdf=%s saved_pages=%s pending_pages=%s",
+                    pdf["id"],
+                    sorted(saved_pages),
+                    pending_pages,
+                )
+                known_page_records = await db.pdf_pages.find(
+                    {"text": {"$ne": ""}, "visual_signature": {"$exists": True}},
+                    {"_id": 0, "text": 1, "visual_signature": 1},
+                ).limit(200).to_list(200)
+                known_page_texts = [page.get("text", "") for page in known_page_records if page.get("text")]
+                failed_pages = []
+
+                for page_num in pending_pages:
+                    page_doc = fitz.open()
+                    page_doc.insert_pdf(source_doc, from_page=page_num - 1, to_page=page_num - 1)
+                    single_page_bytes = page_doc.tobytes()
+                    page_doc.close()
+                    timings: Dict[str, Any] = {"page_details": []}
+                    pages_text, raw_texts, _, _, page_labels = await asyncio.to_thread(
+                        _extract_pages_sync,
+                        single_page_bytes,
+                        known_page_texts,
+                        known_page_records,
+                        timings,
+                    )
+                    if not pages_text:
+                        raise RuntimeError(f"OCR extraction returned no page for pdf {pdf['id']} page={page_num}")
+                    if timings.get("gemini_quota_waiting"):
+                        remaining_pages = [page_num] + [page for page in pending_pages if page > page_num]
+                        await db.upload_jobs.update_one(
+                            {"id": job_id},
+                            {"$set": {
+                                "status": _job_waiting_for_gemini_quota_status(),
+                                "gemini_quota_waiting": True,
+                                "gemini_quota_page": page_num,
+                                "gemini_pending_pages": remaining_pages,
+                                "gemini_completed_pages": sorted(saved_pages),
+                                "gemini_retry_after_seconds": timings.get("gemini_quota_retry_after"),
+                                "updated_at": iso_now(),
+                            }},
+                        )
+                        return
+
+                    text = pages_text[0] if pages_text else ""
+                    raw = raw_texts[0] if raw_texts else ""
+                    page_detail = (timings.get("page_details") or [{}])[0]
+                    normalized = normalize_pdf_text(text)
+                    update_doc = {
+                        "text": text,
+                        "text_raw": raw,
+                        "text_clean": text,
+                        "text_normalized": normalized,
+                        "page_label": source_labels[page_num - 1] if page_num <= len(source_labels) else str(page_num),
+                        "content_signature": build_content_signature(text),
+                        "visual_signature": page_detail.get("visual_signature"),
+                        "ocr_provider": page_detail.get("ocr_provider", "native"),
+                        **extract_page_metadata(normalized),
+                    }
+                    try:
+                        result = await db.pdf_pages.update_one(
+                            {"pdf_id": pdf["id"], "page": page_num},
+                            {"$set": update_doc},
+                            upsert=True,
+                        )
+                        if hasattr(result, "acknowledged") and result.acknowledged is False:
+                            raise RuntimeError("Mongo update not acknowledged")
+                    except Exception as exc:
+                        logger.error("PDF.PAGE_WRITE_FAILED pdf=%s page=%d error=%s", pdf["id"], page_num, repr(exc))
+                        logger.error("PDF.PAGES_WRITE_ERROR pdf=%s page=%d error=%s", pdf["id"], page_num, repr(exc))
+                        failed_pages.append(page_num)
+                        del pages_text, raw_texts, page_labels, page_detail, timings, single_page_bytes, text, raw, update_doc
+                        gc.collect()
+                        continue
+
+                    saved_pages.add(page_num)
+                    logger.info("PDF.PAGE_WRITE_OK pdf=%s page=%d", pdf["id"], page_num)
+                    await db.upload_jobs.update_one(
+                        {"id": job_id},
+                        {"$set": {
+                            "gemini_completed_pages": sorted(saved_pages),
+                            "gemini_pending_pages": [page for page in pending_pages if page not in saved_pages],
+                            "updated_at": iso_now(),
+                        }},
+                    )
+                    del pages_text, raw_texts, page_labels, page_detail, timings, single_page_bytes, text, raw, update_doc
+                    gc.collect()
+
+                if failed_pages:
+                    error = f"Mongo page write failed for pdf {pdf['id']} pages={failed_pages}"
+                    await db.upload_jobs.update_one(
+                        {"id": job_id},
+                        {"$set": {"status": "failed", "error": error, "updated_at": iso_now()}},
+                    )
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "failed", "error": error, "updated_at": iso_now()}})
+                    return
+
+                expected_pages = list(range(1, original_total + 1))
+                ok, verified_pages, missing_pages, unexpected_pages, _ = await _verify_expected_pdf_pages(pdf["id"], expected_pages)
+                logger.info("PDF.PAGES_WRITE_RESULT pdf=%s expected=%s saved=%s missing=%s unexpected=%s", pdf["id"], expected_pages, verified_pages, missing_pages, unexpected_pages)
+                if not ok:
+                    logger.error("PDF.PAGE_WRITE_FAILED pdf=%s page=%s", pdf["id"], missing_pages or unexpected_pages)
+                    await db.upload_jobs.update_one(
+                        {"id": job_id},
+                        {"$set": {"status": "failed", "error": f"Mongo page persistence verification failed for pdf {pdf['id']}", "updated_at": iso_now()}},
+                    )
+                    await db.pdfs.update_one(
+                        {"id": pdf["id"]},
+                        {"$set": {"status": "failed", "error": f"Mongo page persistence verification failed for pdf {pdf['id']}", "updated_at": iso_now()}},
+                    )
+                    return
+
+                total = original_total
+                page_labels = source_labels
+            logger.info("PDF %s indexing complete", pdf["id"])
+            await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"status": "ready", "pages": total, "page_labels": page_labels}})
+            async def backup_drive():
+                try:
+                    master = await get_master_drive()
+                    if not master or not master.get("refresh_token") or pdf.get("drive_file_id"):
+                        return
+                    folder_id = await asyncio.to_thread(gi.ensure_master_root, master["refresh_token"])
+                    drive_id = await asyncio.to_thread(gi.upload_to_drive, master["refresh_token"], folder_id, pdf["filename"], pdf_bytes)
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {
+                        "drive_file_id": drive_id,
+                        "drive_owner": "master",
+                        "storage_type": "drive",
+                        "synced_at": iso_now(),
+                        "drive_backup_error": "",
+                    }})
+                except Exception as exc:
+                    await db.pdfs.update_one({"id": pdf["id"]}, {"$set": {"drive_backup_error": str(exc)}})
+            safe_create_task(backup_drive())
+            await db.upload_jobs.update_one({"id": job_id}, {"$set": {"status": "completed", "updated_at": iso_now()}})
+            return
+
+            # Legacy batch implementation retained below only as historical context.
             try:
                 saved_records = await db.pdf_pages.find(
                     {"pdf_id": pdf["id"], "text": {"$ne": ""}},

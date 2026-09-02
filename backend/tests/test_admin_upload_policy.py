@@ -48,6 +48,23 @@ def test_upload_limits_for_normal_user_are_env_driven(monkeypatch):
     assert limits["active_jobs"] == server.MAX_USER_ACTIVE_JOBS
 
 
+def test_normal_user_ocr_candidate_limit_rejects_large_image_pdf():
+    import server
+
+    try:
+        server._inspect_pdf_for_upload_limits(_pdf_bytes(page_count=3), max_ocr_candidates=2)
+        assert False, "expected an HTTPException"
+    except server.HTTPException as exc:
+        assert exc.status_code == 413
+        assert "massimo 2 pagine immagine" in exc.detail
+
+
+def test_admin_bypasses_ocr_candidate_limit():
+    import server
+
+    assert server._upload_limits_for_user(True)["ocr_candidate_pages"] == 0
+
+
 def test_format_search_result_keeps_query_and_match_text():
     import server
 
