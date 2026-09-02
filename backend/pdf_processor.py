@@ -67,6 +67,70 @@ _timing_lock = threading.Lock()
 _ocr_context = threading.local()
 _gemini_concurrency_semaphore = threading.Semaphore(GEMINI_MAX_CONCURRENCY)
 _GEMINI_EXHAUSTED_KEYS = set()
+_GEMINI_KEY_STATS_LOCK = threading.Lock()
+_GEMINI_KEY_STATS: Dict[int, Dict[str, Any]] = {}
+_GEMINI_LAST_QUOTA_EVENT: Optional[Dict[str, Any]] = None
+
+
+def _gemini_stat_bucket(key_index: int) -> Dict[str, Any]:
+    return _GEMINI_KEY_STATS.setdefault(int(key_index), {
+        "key_index": int(key_index),
+        "selected": 0,
+        "success": 0,
+        "rate_limited": 0,
+        "quota_exhausted": 0,
+        "rotations_from": 0,
+        "errors": 0,
+        "last_used_at": None,
+        "last_status_code": None,
+        "last_retry_after_seconds": None,
+    })
+
+
+def _record_gemini_key_event(key_index: int, event: str, *, status_code: Optional[int] = None, retry_after: Optional[float] = None) -> None:
+    global _GEMINI_LAST_QUOTA_EVENT
+    now = datetime.now(timezone.utc).isoformat()
+    with _GEMINI_KEY_STATS_LOCK:
+        bucket = _gemini_stat_bucket(key_index)
+        if event in {"selected", "success", "rate_limited", "quota_exhausted", "rotations_from", "errors"}:
+            bucket[event] += 1
+        bucket["last_used_at"] = now
+        if status_code is not None:
+            bucket["last_status_code"] = int(status_code)
+        if retry_after is not None:
+            bucket["last_retry_after_seconds"] = float(retry_after)
+        if event == "quota_exhausted":
+            _GEMINI_LAST_QUOTA_EVENT = {
+                "key_index": int(key_index),
+                "at": now,
+                "retry_after_seconds": float(retry_after) if retry_after is not None else None,
+                "status_code": status_code,
+            }
+
+
+def get_gemini_admin_status() -> Dict[str, Any]:
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    exhausted_indexes = [
+        idx
+        for idx, key in enumerate(keys)
+        if key and key in _GEMINI_EXHAUSTED_KEYS
+    ]
+    with _GEMINI_KEY_STATS_LOCK:
+        per_key = [_GEMINI_KEY_STATS.get(idx, _gemini_stat_bucket(idx)).copy() for idx, key in enumerate(keys) if key]
+        last_quota_event = _GEMINI_LAST_QUOTA_EVENT.copy() if _GEMINI_LAST_QUOTA_EVENT else None
+    return {
+        "configured": bool(keys),
+        "model": GEMINI_MODEL,
+        "key_count": len([key for key in keys if key]),
+        "exhausted_key_indexes": exhausted_indexes,
+        "available_key_count": max(0, len([key for key in keys if key]) - len(exhausted_indexes)),
+        "max_concurrency": GEMINI_MAX_CONCURRENCY,
+        "max_retries": GEMINI_MAX_RETRIES,
+        "request_timeout_seconds": GEMINI_REQUEST_TIMEOUT_SECONDS,
+        "per_key": per_key,
+        "last_quota_event": last_quota_event,
+        "reset_hint": "Disponibile solo se Gemini restituisce Retry-After; altrimenti il reset quota dipende dal piano Google.",
+    }
 
 
 class GeminiQuotaExceeded(RuntimeError):
@@ -1316,6 +1380,7 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
 
     for key_index, api_key in candidates:
         logger.info("GEMINI_KEY_SELECTED page=%s key_index=%s", expected_page, key_index)
+        _record_gemini_key_event(key_index, "selected")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
         headers = {
             "x-goog-api-key": api_key,
@@ -1337,16 +1402,19 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                     retry_after = _extract_retry_after(dict(response.headers))
                     response_text = (response.text or "")[:1000]
                     daily_quota = _is_gemini_daily_quota_error(response)
+                    _record_gemini_key_event(key_index, "rate_limited", status_code=response.status_code, retry_after=retry_after)
                     logger.warning(
                         "Gemini rate-limited (429) for page %s key_index=%s attempt %d/%d daily_quota=%s retry_after=%s",
                         expected_page, key_index, attempt, GEMINI_MAX_RETRIES + 1, daily_quota, retry_after,
                     )
                     if daily_quota:
                         _GEMINI_EXHAUSTED_KEYS.add(api_key)
+                        _record_gemini_key_event(key_index, "quota_exhausted", status_code=response.status_code, retry_after=retry_after)
                         logger.error("GEMINI_KEY_QUOTA_EXHAUSTED page=%s key_index=%s", expected_page, key_index)
                         remaining = _gemini_key_candidates()
                         if remaining:
                             next_index = remaining[0][0]
+                            _record_gemini_key_event(key_index, "rotations_from", status_code=response.status_code, retry_after=retry_after)
                             logger.warning("GEMINI_KEY_ROTATE page=%s from=%s to=%s", expected_page, key_index, next_index)
                             break
                         logger.error("GEMINI_ALL_KEYS_EXHAUSTED page=%s", expected_page)
@@ -1369,14 +1437,17 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                     return ""
 
                 if response.status_code in {400, 401, 403}:
+                    _record_gemini_key_event(key_index, "errors", status_code=response.status_code)
                     logger.warning("Gemini client error (status=%s) for page %s key_index=%s: %s", response.status_code, expected_page, key_index, response.text[:200])
                     return ""
 
                 if response.status_code == 404:
+                    _record_gemini_key_event(key_index, "errors", status_code=response.status_code)
                     logger.error("Gemini model not found (404): %s. Verify GEMINI_MODEL=%s is available.", response.text[:200], GEMINI_MODEL)
                     return ""
 
                 if response.status_code in {500, 503}:
+                    _record_gemini_key_event(key_index, "errors", status_code=response.status_code)
                     if attempt <= GEMINI_MAX_RETRIES:
                         sleep_for = min(20.0, 2 ** (attempt - 1) * 1.5)
                         logger.warning("Gemini transient error (status=%s) for page %s key_index=%s, retrying in %.1fs", response.status_code, expected_page, key_index, sleep_for)
@@ -1386,6 +1457,7 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                     return ""
 
                 if response.status_code >= 500:
+                    _record_gemini_key_event(key_index, "errors", status_code=response.status_code)
                     logger.warning("Gemini server error (status=%s) for page %s key_index=%s", response.status_code, expected_page, key_index)
                     return ""
 
@@ -1420,18 +1492,21 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                     _record_timing(timings, "gemini_ms", elapsed_ms)
                     _record_timing(timings, "gemini_attempt", attempt)
 
+                _record_gemini_key_event(key_index, "success", status_code=response.status_code)
                 logger.info("Gemini OCR succeeded for page %s key_index=%s in %.0f ms", expected_page, key_index, elapsed_ms)
                 return cleaned
 
             except GeminiQuotaExceeded:
                 raise
             except httpx.TimeoutException:
+                _record_gemini_key_event(key_index, "errors")
                 logger.warning("Gemini request timeout for page %s key_index=%s (timeout=%.0fs), attempt %d/%d", expected_page, key_index, GEMINI_REQUEST_TIMEOUT_SECONDS, attempt, GEMINI_MAX_RETRIES + 1)
                 if attempt <= GEMINI_MAX_RETRIES:
                     time.sleep(min(15.0, 2 ** (attempt - 1) * 1.0))
                     continue
                 return ""
             except Exception as exc:
+                _record_gemini_key_event(key_index, "errors")
                 logger.warning("Gemini OCR exception for page %s key_index=%s: %s (type=%s), attempt %d/%d", expected_page, key_index, exc, type(exc).__name__, attempt, GEMINI_MAX_RETRIES + 1)
                 if attempt <= GEMINI_MAX_RETRIES:
                     time.sleep(min(15.0, 2 ** (attempt - 1) * 1.0))

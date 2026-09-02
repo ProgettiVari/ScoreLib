@@ -49,9 +49,30 @@ load_dotenv(ROOT_DIR / ".env")
 
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
-MAX_UPLOAD_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_SIZE_BYTES", 15 * 1024 * 1024))
-MAX_UPLOAD_FILES_PER_REQUEST = int(os.environ.get("MAX_UPLOAD_FILES_PER_REQUEST", 5))
-MAX_UPLOAD_QUEUE_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_QUEUE_SIZE_BYTES", 200 * 1024 * 1024))
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+
+
+MAX_USER_ACTIVE_JOBS = _env_int("MAX_USER_ACTIVE_JOBS", 1, 1)
+MAX_GLOBAL_PROCESSING_JOBS = _env_int("MAX_GLOBAL_PROCESSING_JOBS", 1, 1)
+MAX_USER_UPLOAD_FILES_PER_REQUEST = _env_int(
+    "MAX_USER_UPLOAD_FILES_PER_REQUEST",
+    _env_int("MAX_UPLOAD_FILES_PER_REQUEST", 1, 1),
+    1,
+)
+MAX_USER_UPLOAD_SIZE_BYTES = _env_int("MAX_USER_UPLOAD_SIZE_BYTES", _env_int("MAX_UPLOAD_SIZE_BYTES", 15 * 1024 * 1024, 1), 1)
+MAX_USER_PDF_PAGES = _env_int("MAX_USER_PDF_PAGES", 80, 0)
+MAX_USER_OCR_CANDIDATE_PAGES = _env_int("MAX_USER_OCR_CANDIDATE_PAGES", 40, 0)
+MAX_ADMIN_UPLOAD_SIZE_BYTES = _env_int("MAX_ADMIN_UPLOAD_SIZE_BYTES", 100 * 1024 * 1024, 1)
+MAX_ADMIN_PDF_PAGES = _env_int("MAX_ADMIN_PDF_PAGES", 0, 0)
+MAX_ADMIN_OCR_CANDIDATE_PAGES = _env_int("MAX_ADMIN_OCR_CANDIDATE_PAGES", 0, 0)
+ACTIVE_UPLOAD_JOB_STATUSES = ["queued", "processing", "waiting_for_gemini_quota"]
+_pdf_processing_semaphore = asyncio.Semaphore(MAX_GLOBAL_PROCESSING_JOBS)
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -75,6 +96,60 @@ def get_admin_password() -> Optional[str]:
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def _is_admin_user(user: Optional[dict]) -> bool:
+    if not user:
+        return False
+    return bool(user.get("is_admin") or user.get("email", "").lower() == ADMIN_EMAIL)
+
+
+def _upload_limits_for_user(is_admin: bool) -> Dict[str, int]:
+    return {
+        "files_per_request": 5 if is_admin else MAX_USER_UPLOAD_FILES_PER_REQUEST,
+        "file_size_bytes": MAX_ADMIN_UPLOAD_SIZE_BYTES if is_admin else MAX_USER_UPLOAD_SIZE_BYTES,
+        "pdf_pages": MAX_ADMIN_PDF_PAGES if is_admin else MAX_USER_PDF_PAGES,
+        "ocr_candidate_pages": MAX_ADMIN_OCR_CANDIDATE_PAGES if is_admin else MAX_USER_OCR_CANDIDATE_PAGES,
+        "active_jobs": 0 if is_admin else MAX_USER_ACTIVE_JOBS,
+        "global_processing_jobs": MAX_GLOBAL_PROCESSING_JOBS,
+    }
+
+
+async def _count_active_upload_jobs(user_id: Optional[str] = None) -> int:
+    query: Dict[str, Any] = {"status": {"$in": ACTIVE_UPLOAD_JOB_STATUSES}}
+    if user_id:
+        query["user_id"] = user_id
+    return await db.upload_jobs.count_documents(query)
+
+
+def _inspect_pdf_for_upload_limits(content: bytes, *, max_pages: int = 0, max_ocr_candidates: int = 0) -> Dict[str, int]:
+    try:
+        with fitz.open(stream=content, filetype="pdf") as doc:
+            page_count = int(doc.page_count or 0)
+            if page_count <= 0:
+                raise HTTPException(status_code=400, detail="Il PDF non contiene pagine leggibili")
+            if max_pages and page_count > max_pages:
+                raise HTTPException(status_code=413, detail=f"PDF troppo lungo: massimo {max_pages} pagine")
+
+            ocr_candidates = 0
+            if max_ocr_candidates:
+                for page in doc:
+                    text = page.get_text("text") or ""
+                    words = len(re.findall(r"\w+", text))
+                    has_images = bool(page.get_images(full=True))
+                    if has_images or words < 8:
+                        ocr_candidates += 1
+                    if ocr_candidates > max_ocr_candidates:
+                        raise HTTPException(status_code=413, detail=f"Troppe pagine da OCR: massimo {max_ocr_candidates} pagine immagine per upload")
+
+            return {"page_count": page_count, "ocr_candidate_pages": ocr_candidates}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("PDF.UPLOAD_PREFLIGHT_FAILED error=%s", repr(exc))
+        raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
+
+
 if "<" in FORM_SUBMIT_DEST_EMAIL and ">" in FORM_SUBMIT_DEST_EMAIL:
     FORM_SUBMIT_DEST_EMAIL = FORM_SUBMIT_DEST_EMAIL.split("<")[-1].strip(" >")
 
@@ -1050,9 +1125,17 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail="Nessun file inviato")
 
     user = await db.users.find_one({"user_id": user_id})
-    is_admin = user and (user.get("is_admin") or user.get("email", "").lower() == ADMIN_EMAIL)
-    if not is_admin and len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
-        raise HTTPException(status_code=413, detail=f"Solo {MAX_UPLOAD_FILES_PER_REQUEST} file possono essere caricati per volta")
+    is_admin = _is_admin_user(user)
+    limits = _upload_limits_for_user(is_admin)
+    if len(files) > limits["files_per_request"]:
+        raise HTTPException(status_code=413, detail=f"Solo {limits['files_per_request']} file possono essere caricati per volta")
+    if not is_admin:
+        active_user_jobs = await _count_active_upload_jobs(user_id)
+        if active_user_jobs >= MAX_USER_ACTIVE_JOBS:
+            raise HTTPException(status_code=429, detail="Hai gia un PDF in elaborazione. Attendi che finisca prima di caricarne un altro.")
+        active_global_jobs = await _count_active_upload_jobs()
+        if active_global_jobs >= MAX_GLOBAL_PROCESSING_JOBS:
+            raise HTTPException(status_code=429, detail="Il server sta gia elaborando un PDF. Riprova tra poco.")
 
     results = []
     total_uploaded_size = 0
@@ -1064,14 +1147,26 @@ async def upload_pdf(
         logger.info("PDF.UPLOAD_RECEIVED size=%d filename=%s recv_ms=%.1f", len(content), filename, recv_ms)
         
         total_uploaded_size += len(content)
-        if not is_admin and total_uploaded_size > MAX_UPLOAD_QUEUE_SIZE_BYTES:
-            raise HTTPException(status_code=413, detail=f"Superata la dimensione massima totale di {MAX_UPLOAD_QUEUE_SIZE_BYTES // (1024 * 1024)} MB per upload")
-        if len(content) > MAX_UPLOAD_SIZE_BYTES:
-            raise HTTPException(status_code=413, detail=f"File troppo grande: massimo {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB")
+        if total_uploaded_size > limits["file_size_bytes"] * limits["files_per_request"]:
+            raise HTTPException(status_code=413, detail="Superata la dimensione massima totale per upload")
+        if len(content) > limits["file_size_bytes"]:
+            raise HTTPException(status_code=413, detail=f"File troppo grande: massimo {limits['file_size_bytes'] // (1024 * 1024)} MB")
         if not filename or Path(filename).suffix.lower() != ".pdf":
             raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
         if len(content) < 5 or not content.startswith(b"%PDF-"):
             raise HTTPException(status_code=400, detail="Il file caricato non è un PDF valido")
+        preflight = _inspect_pdf_for_upload_limits(
+            content,
+            max_pages=limits["pdf_pages"],
+            max_ocr_candidates=limits["ocr_candidate_pages"],
+        )
+        logger.info(
+            "PDF.UPLOAD_PREFLIGHT pdf_filename=%s pages=%d ocr_candidates=%d is_admin=%s",
+            filename,
+            preflight["page_count"],
+            preflight["ocr_candidate_pages"],
+            is_admin,
+        )
 
         # Save PDF without compression first (fast path for response)
         # Compression will happen in background job during OCR processing
@@ -1105,6 +1200,7 @@ async def upload_pdf(
         await db.upload_jobs.insert_one({
             "id": job_id,
             "pdf_id": pdf_id,
+            "user_id": user_id,
             "status": "queued",
             "created_at": iso_now()
         })
@@ -1118,6 +1214,24 @@ async def upload_pdf(
         await log_event("pdf.uploaded", f"Upload completato: {len(results)} file", user_id=user_id, meta={"count": len(results)})
     
     return {"results": results}
+
+
+@api.get("/pdfs/upload-policy")
+async def get_upload_policy(user_id: str = Depends(get_current_user_id)):
+    user = await db.users.find_one({"user_id": user_id})
+    is_admin = _is_admin_user(user)
+    limits = _upload_limits_for_user(is_admin)
+    active_user_jobs = await _count_active_upload_jobs(user_id)
+    active_global_jobs = await _count_active_upload_jobs()
+    can_upload = is_admin or (active_user_jobs < MAX_USER_ACTIVE_JOBS and active_global_jobs < MAX_GLOBAL_PROCESSING_JOBS)
+    return {
+        "is_admin": is_admin,
+        "can_upload": can_upload,
+        "active_user_jobs": active_user_jobs,
+        "active_global_jobs": active_global_jobs,
+        "limits": limits,
+        "message": None if can_upload else "Attendi che finisca l'elaborazione in corso prima di caricare un altro PDF.",
+    }
 
 @api.get("/pdfs/{pdf_id}/status")
 async def get_pdf_status(pdf_id: str, user_id: str = Depends(get_current_user_id)):
@@ -1615,6 +1729,10 @@ def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optiona
         final_snippet = sanitized
     else:
         final_snippet = _select_readable_snippet(raw_snippet)
+    if q and raw_snippet and normalize_search_query(q) not in normalize_search_query(final_snippet):
+        fallback_snippet = _select_readable_snippet(raw_snippet)
+        if fallback_snippet:
+            final_snippet = fallback_snippet
 
     return {
         "pdf_id": p["id"],
@@ -1628,10 +1746,44 @@ def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optiona
         "page_label": pg.get("page_label", pg["page"]),
         # Provide sanitized snippet (or fallback light-clean preview)
         "snippet": final_snippet,
+        "query": q,
+        "match_text": q,
         "score": score,
         "is_protected": p.get("is_protected", False),
         "source": source,
         "match_in": match_in,
+    }
+
+
+@api.get("/pdfs/{pdf_id}/search-context")
+async def get_pdf_search_context(
+    pdf_id: str,
+    q: str = Query(..., min_length=1),
+    page: int = Query(1, ge=1),
+    share_token: Optional[str] = Query(None),
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
+    user_id = await _get_active_user_id(user_id)
+    can_access = await _user_can_access_pdf(user_id, pdf_id, share_token)
+    if not can_access:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    pg = await db.pdf_pages.find_one({"pdf_id": pdf_id, "page": page}, {"_id": 0})
+    if not pg:
+        return {"pdf_id": pdf_id, "page": page, "query": q, "snippet": "", "match_text": q, "has_indexed_text": False}
+    raw_q = normalize_search_query(q).strip()
+    raw_snippet = make_snippet(pg.get("text_raw", pg.get("text", "")), raw_q)
+    snippet = __import__("pdf_processor").sanitize_snippet_for_api(raw_snippet) if raw_snippet else ""
+    if not snippet or normalize_search_query(raw_q) not in normalize_search_query(snippet):
+        snippet = _select_readable_snippet(raw_snippet)
+    return {
+        "pdf_id": pdf_id,
+        "page": pg.get("page", page),
+        "page_label": pg.get("page_label", page),
+        "query": raw_q,
+        "match_text": raw_q,
+        "snippet": snippet,
+        "has_indexed_text": bool(pg.get("text") or pg.get("text_raw")),
+        "ocr_provider": pg.get("ocr_provider", ""),
     }
 
 @api.get("/search")
@@ -1991,6 +2143,34 @@ async def ban_access(payload: dict, user_id: str = Depends(require_admin)):
     await log_event("access.banned", f"Email bloccata: {email}", user_id=user_id, meta={"email": email})
     return {"ok": True}
 
+
+@api.post("/admin/access-requests/unban")
+async def unban_access(payload: dict, user_id: str = Depends(require_admin)):
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email richiesta")
+    await db.access_requests.update_one(
+        {"email": email},
+        {
+            "$set": {"status": "pending", "email": email, "unbanned_at": iso_now()},
+            "$unset": {"banned_at": "", "revoked_at": ""},
+        },
+        upsert=True,
+    )
+    await db.users.update_many(
+        {"email": email},
+        {"$unset": {"is_banned": "", "banned": "", "banned_at": ""}, "$set": {"updated_at": iso_now()}},
+    )
+    await log_event("access.unbanned", f"Email sbloccata: {email}", user_id=user_id, meta={"email": email})
+    return {"ok": True}
+
+
+@api.get("/admin/gemini/status")
+async def admin_gemini_status(_: str = Depends(require_admin)):
+    import pdf_processor
+
+    return pdf_processor.get_gemini_admin_status()
+
 @api.get("/admin/master-drive/status")
 async def master_drive_status(_: str = Depends(require_admin)):
     m = await get_master_drive()
@@ -2216,6 +2396,11 @@ def _should_wait_for_gemini_quota(
 
 
 async def process_pdf_job(job_id):
+    async with _pdf_processing_semaphore:
+        return await _process_pdf_job_locked(job_id)
+
+
+async def _process_pdf_job_locked(job_id):
     job = await db.upload_jobs.find_one({"id": job_id})
     if not job: return
 

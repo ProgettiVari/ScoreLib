@@ -9,9 +9,8 @@ function wait(ms) {
 
 // Client-side upload constraints (kept conservative to avoid backend overload)
 const MAX_UPLOAD_SIZE_MB = 20; // single file cannot exceed session limit
-const MAX_UPLOAD_FILE_COUNT = 2; // massimo file per session
-const MAX_UPLOAD_QUEUE_SIZE_MB = 20; // totale per upload/sessione
-const UPLOAD_BATCH_SIZE = 2; // invia fino a 2 file per richiesta
+const MAX_UPLOAD_FILE_COUNT = 1; // fallback conservativo; il backend invia la policy reale
+const UPLOAD_BATCH_SIZE = 1;
 
 function makeFileId(file) {
   const randomPart = typeof crypto !== "undefined" && crypto.randomUUID
@@ -50,6 +49,7 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [policy, setPolicy] = useState(null);
   const abortRef = useRef(null);
   const mountedRef = useRef(false);
 
@@ -105,28 +105,45 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
       abortRef.current?.abort();
       setBusy(false);
       setDrag(false);
+      setPolicy(null);
+      return undefined;
     }
+    let alive = true;
+    api.get("/pdfs/upload-policy")
+      .then((r) => { if (alive && mountedRef.current) setPolicy(r.data); })
+      .catch(() => { if (alive && mountedRef.current) setPolicy(null); });
+    return () => { alive = false; };
   }, [open]);
+
+  const policyLimits = policy?.limits || {};
+  const maxFileCount = policyLimits.files_per_request || MAX_UPLOAD_FILE_COUNT;
+  const maxFileSizeBytes = policyLimits.file_size_bytes || (MAX_UPLOAD_SIZE_MB * 1024 * 1024);
+  const maxFileSizeMb = Math.max(1, Math.floor(maxFileSizeBytes / (1024 * 1024)));
+  const maxTotalBytes = maxFileSizeBytes * maxFileCount;
+  const canUploadNow = policy?.can_upload !== false;
 
   const handleFiles = async (list) => {
     if (busy) {
       toast.error("Upload in corso: attendi il completamento del batch corrente prima di aggiungere altri file.");
       return;
     }
+    if (!canUploadNow) {
+      toast.error(policy?.message || "Attendi che finisca l'elaborazione in corso prima di caricare un altro PDF.");
+      return;
+    }
 
     const picked = Array.from(list || []);
     const valid = picked.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
-    const singleMaxBytes = MAX_UPLOAD_QUEUE_SIZE_MB * 1024 * 1024;
-    const oversized = valid.filter((file) => file.size > singleMaxBytes);
+    const oversized = valid.filter((file) => file.size > maxFileSizeBytes);
     const invalid = picked.length - valid.length + oversized.length;
     if (invalid > 0) {
-      toast.error(`${invalid} file ignorati: carica solo PDF validi fino a ${MAX_UPLOAD_QUEUE_SIZE_MB} MB per upload.`);
+      toast.error(`${invalid} file ignorati: carica solo PDF validi fino a ${maxFileSizeMb} MB.`);
     }
 
     setFiles((prev) => {
       const seen = new Set(prev.map(({ file }) => `${file.name}-${file.size}-${file.lastModified}`));
-      const remainingCount = MAX_UPLOAD_FILE_COUNT - prev.length;
-      let remainingBytes = (MAX_UPLOAD_QUEUE_SIZE_MB * 1024 * 1024) - prev.reduce((sum, item) => sum + item.file.size, 0);
+      const remainingCount = maxFileCount - prev.length;
+      let remainingBytes = maxTotalBytes - prev.reduce((sum, item) => sum + item.file.size, 0);
       const next = [];
 
       for (const file of valid) {
@@ -134,24 +151,28 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
         if (file.size > remainingBytes) continue;
         const key = `${file.name}-${file.size}-${file.lastModified}`;
         if (seen.has(key)) continue;
-        if (file.size > singleMaxBytes) continue;
+        if (file.size > maxFileSizeBytes) continue;
         next.push({ id: makeFileId(file), file });
         seen.add(key);
         remainingBytes -= file.size;
       }
 
       const droppedFiles = valid.length - next.length;
-      if (droppedFiles > 0 || prev.length + next.length > MAX_UPLOAD_FILE_COUNT) {
-        toast.error(`Limite upload: fino a ${MAX_UPLOAD_FILE_COUNT} file e ${MAX_UPLOAD_QUEUE_SIZE_MB} MB totali. Seleziona meno file o carica in più lotti.`);
+      if (droppedFiles > 0 || prev.length + next.length > maxFileCount) {
+        toast.error(`Limite upload: fino a ${maxFileCount} file e ${maxFileSizeMb} MB per file.`);
       }
 
-      return [...prev, ...next].slice(0, MAX_UPLOAD_FILE_COUNT);
+      return [...prev, ...next].slice(0, maxFileCount);
     });
   };
   const remove = (id) => setFiles((p) => p.filter((entry) => entry.id !== id));
 
   const upload = async () => {
     if (!files.length) return;
+    if (!canUploadNow) {
+      toast.error(policy?.message || "Attendi che finisca l'elaborazione in corso prima di caricare un altro PDF.");
+      return;
+    }
     setBusy(true);
     setProgress(0);
     abortRef.current?.abort();
@@ -272,7 +293,12 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
             >
               <UploadCloud size={36} strokeWidth={1.5} className="mx-auto mb-3 text-muted2" />
               <p className="font-medium mb-1">Trascina qui i tuoi PDF, o clicca per selezionare</p>
-              <p className="text-sm text-muted2">2 file alla volta, fino a 20 MB per upload e indicizzati in background.</p>
+              <p className="text-sm text-muted2">
+                {maxFileCount} file alla volta, fino a {maxFileSizeMb} MB per file. L'indicizzazione continua in background.
+              </p>
+              {!canUploadNow && (
+                <p className="text-sm text-amber-700 mt-3">{policy?.message || "Upload temporaneamente non disponibile."}</p>
+              )}
               <input
                 type="file"
                 accept="application/pdf"
@@ -294,7 +320,7 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
             )}
             <div className="mt-6 flex justify-end gap-3">
               <button onClick={close} className="btn-ghost border border-rule rounded-sm px-4 py-2" data-testid="upload-cancel-btn">Annulla</button>
-              <button onClick={upload} disabled={busy || !files.length} className="btn-primary disabled:opacity-40" data-testid="upload-start-btn">{busy ? "Caricamento..." : "Carica"}</button>
+              <button onClick={upload} disabled={busy || !files.length || !canUploadNow} className="btn-primary disabled:opacity-40" data-testid="upload-start-btn">{busy ? "Caricamento..." : "Carica"}</button>
             </div>
             {busy && (
               <div className="mt-4" data-testid="upload-progress">

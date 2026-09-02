@@ -1,7 +1,8 @@
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "C:/Users/miche/Downloads/boh-emerg-cleanup-final-1/boh-emerg-cleanup-final/backend")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("JWT_SECRET", "quota-semantics-test-secret")
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "quota_semantics_test")

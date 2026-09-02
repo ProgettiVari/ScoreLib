@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Shield, Cloud, Users, FileText, AlertTriangle, RefreshCw, ScrollText, Unlink, HardDriveUpload, Check, X, CheckCircle } from "lucide-react";
+import { Shield, Cloud, Users, FileText, AlertTriangle, RefreshCw, ScrollText, Unlink, HardDriveUpload, Check, X, CheckCircle, KeyRound, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -28,6 +28,7 @@ export default function Admin() {
   const [showAllUsers, setShowAllUsers] = useState(false);
   const [busy, setBusy] = useState(false);
   const [master, setMaster] = useState(null);
+  const [gemini, setGemini] = useState(null);
 
   const isAdmin = user?.is_admin;
   const visibleRequests = showAllRequests ? requests : requests.slice(0, 3);
@@ -36,16 +37,18 @@ export default function Admin() {
   const load = async () => {
     setBusy(true);
     try {
-      const [s, m, r, u] = await Promise.all([
+      const [s, m, r, u, g] = await Promise.all([
         api.get("/admin/stats"),
         api.get("/admin/master-drive/status"),
         api.get("/admin/access-requests"),
-        api.get("/admin/users").catch(() => ({ data: { users: [] } }))
+        api.get("/admin/users").catch(() => ({ data: { users: [] } })),
+        api.get("/admin/gemini/status").catch(() => ({ data: null }))
       ]);
       setStats(s.data); 
       setMaster(m.data);
       setRequests(r.data || []);
       setUsers(u.data.users || []);
+      setGemini(g.data || null);
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally { setBusy(false); }
@@ -53,8 +56,10 @@ export default function Admin() {
 
   const handleRequest = async (email, action) => {
     try {
+      if (action === "ban" && !window.confirm(`Bloccare ${email}?`)) return;
+      if (action === "unban" && !window.confirm(`Sbloccare ${email}? Tornera tra le richieste in attesa.`)) return;
       await api.post(`/admin/access-requests/${action}`, { email });
-      toast.success(action === "approve" ? "Richiesta approvata" : action === "reject" ? "Richiesta rifiutata" : action === "ban" ? "Email bloccata" : "Accesso revocato");
+      toast.success(action === "approve" ? "Richiesta approvata" : action === "reject" ? "Richiesta rifiutata" : action === "ban" ? "Email bloccata" : action === "unban" ? "Email sbloccata" : "Accesso revocato");
       load();
     } catch (e) {
       toast.error(getErrorMessage(e));
@@ -173,6 +178,57 @@ export default function Admin() {
           </div>
         )}
 
+        {gemini && (
+          <section>
+            <h2 className="font-display font-bold text-xl mb-4 flex items-center gap-2">
+              <KeyRound size={20} /> Gemini OCR
+            </h2>
+            <div className="border border-rule rounded-md bg-card p-5">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-5">
+                <Stat icon={<KeyRound size={16} />} label="Chiavi" value={gemini.key_count || 0} />
+                <Stat icon={<CheckCircle size={16} />} label="Disponibili" value={gemini.available_key_count || 0} accent={(gemini.available_key_count || 0) === 0} />
+                <Stat icon={<AlertTriangle size={16} />} label="Esaurite" value={(gemini.exhausted_key_indexes || []).length} accent={(gemini.exhausted_key_indexes || []).length > 0} />
+                <Stat icon={<RefreshCw size={16} />} label="Concorrenza" value={gemini.max_concurrency || 1} />
+                <Stat icon={<Cloud size={16} />} label="Modello" value={gemini.model || "-"} />
+              </div>
+              <div className="overflow-x-auto border border-rule rounded-sm">
+                <table className="w-full text-xs">
+                  <thead className="bg-canvas2 text-left">
+                    <tr>
+                      <th className="py-2 px-3 overline">Key</th>
+                      <th className="py-2 px-3 overline">Usi</th>
+                      <th className="py-2 px-3 overline">OK</th>
+                      <th className="py-2 px-3 overline">429</th>
+                      <th className="py-2 px-3 overline">Quota</th>
+                      <th className="py-2 px-3 overline">Rotazioni</th>
+                      <th className="py-2 px-3 overline">Reset</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(gemini.per_key || []).map((k) => (
+                      <tr key={k.key_index} className="border-t border-rule">
+                        <td className="py-2 px-3 text-mono">#{k.key_index}</td>
+                        <td className="py-2 px-3 text-mono">{k.selected || 0}</td>
+                        <td className="py-2 px-3 text-mono">{k.success || 0}</td>
+                        <td className="py-2 px-3 text-mono">{k.rate_limited || 0}</td>
+                        <td className="py-2 px-3 text-mono">{k.quota_exhausted || 0}</td>
+                        <td className="py-2 px-3 text-mono">{k.rotations_from || 0}</td>
+                        <td className="py-2 px-3 text-muted2">
+                          {k.last_retry_after_seconds != null ? `${Math.ceil(k.last_retry_after_seconds / 60)} min` : "non disponibile"}
+                        </td>
+                      </tr>
+                    ))}
+                    {(!gemini.per_key || gemini.per_key.length === 0) && (
+                      <tr><td colSpan="7" className="py-4 px-3 text-center text-muted3">Nessuna chiave configurata</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted2 mt-3">{gemini.reset_hint}</p>
+            </div>
+          </section>
+        )}
+
         {/* Membri e Online status */}
         <section>
           <h2 className="font-display font-bold text-xl mb-4 flex items-center gap-2">
@@ -226,7 +282,7 @@ export default function Admin() {
                     </div>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
                       r.status === 'approved' ? 'bg-emerald-500 text-emerald-950 dark:bg-emerald-400 dark:text-emerald-950' :
-                      r.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                      r.status === 'rejected' || r.status === 'banned' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                     }`}>
                       {r.status.toUpperCase()}
                     </span>
@@ -240,6 +296,11 @@ export default function Admin() {
                       <button onClick={() => handleRequest(r.email, "approve")} className="p-2 bg-emerald-100 text-emerald-700 rounded-sm hover:bg-emerald-200" aria-label="Approva richiesta"><Check size={16} /></button>
                       <button onClick={() => handleRequest(r.email, "reject")} className="p-2 bg-red-100 text-red-700 rounded-sm hover:bg-red-200" aria-label="Rifiuta richiesta"><X size={16} /></button>
                       <button onClick={() => handleRequest(r.email, "ban")} className="px-2 py-1 bg-slate-100 text-slate-700 rounded-sm hover:bg-slate-200 text-[10px] font-semibold uppercase tracking-wide" aria-label="Blocca utente">Blocca</button>
+                    </div>
+                  )}
+                  {r.status === 'banned' && (
+                    <div className="flex justify-end pt-1">
+                      <button onClick={() => handleRequest(r.email, "unban")} className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-sm hover:bg-emerald-200 text-[10px] font-semibold uppercase tracking-wide" aria-label="Sblocca utente"><Unlock size={14} /> Sblocca</button>
                     </div>
                   )}
                 </div>
@@ -269,7 +330,7 @@ export default function Admin() {
                     <td className="py-3 px-4">
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                         r.status === 'approved' ? 'bg-emerald-500 text-emerald-950 dark:bg-emerald-400 dark:text-emerald-950' : 
-                        r.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                        r.status === 'rejected' || r.status === 'banned' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                       }`}>
                         {r.status.toUpperCase()}
                       </span>
@@ -281,6 +342,11 @@ export default function Admin() {
                           <button onClick={() => handleRequest(r.email, "reject")} className="p-1.5 bg-red-100 text-red-700 rounded-sm hover:bg-red-200"><X size={16} /></button>
                           <button onClick={() => handleRequest(r.email, "ban")} className="px-2 py-1 bg-slate-100 text-slate-700 rounded-sm hover:bg-slate-200 text-[10px] font-semibold uppercase tracking-wide">Blocca</button>
                         </div>
+                      )}
+                      {r.status === 'banned' && (
+                        <button onClick={() => handleRequest(r.email, "unban")} className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-100 text-emerald-700 rounded-sm hover:bg-emerald-200 text-[10px] font-semibold uppercase tracking-wide">
+                          <Unlock size={14} /> Sblocca
+                        </button>
                       )}
                     </td>
                   </tr>
