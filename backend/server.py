@@ -2190,6 +2190,31 @@ def _extract_pages_sync(
         known_page_records=known_page_records,
     )
 
+
+def _should_wait_for_gemini_quota(
+    timings: Dict[str, Any],
+    pending_pages: List[int],
+    pages_text: List[str],
+    page_map: List[int],
+    original_total: int,
+    completed_pages: List[int],
+) -> bool:
+    if not timings.get("gemini_quota_waiting"):
+        return False
+    extracted_page_numbers = {
+        page_map[index]
+        for index, text in enumerate(pages_text)
+        if index < len(page_map) and text
+    }
+    processed_page_numbers = set(completed_pages) | extracted_page_numbers
+    all_pages_processed = (
+        not pending_pages
+        and len(pages_text) == len(page_map)
+        and set(range(1, original_total + 1)).issubset(processed_page_numbers)
+    )
+    return not all_pages_processed
+
+
 async def process_pdf_job(job_id):
     job = await db.upload_jobs.find_one({"id": job_id})
     if not job: return
@@ -2296,7 +2321,14 @@ async def process_pdf_job(job_id):
             else:
                 page_map = list(range(1, total + 1))
             logger.info(f"PDF extraction for {pdf['id']}: {total} pages, OCR used: {used_ocr}, resume_pending={pending_pages}")
-            if timings.get("gemini_quota_waiting"):
+            if _should_wait_for_gemini_quota(
+                timings,
+                pending_pages,
+                pages_text,
+                page_map,
+                original_total,
+                completed_pages,
+            ):
                 quota_page = timings.get("gemini_quota_page")
                 completed_pages, pending_pages = _gemini_quota_resume_ranges(
                     total_pages=total,

@@ -1344,11 +1344,6 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                     if daily_quota:
                         _GEMINI_EXHAUSTED_KEYS.add(api_key)
                         logger.error("GEMINI_KEY_QUOTA_EXHAUSTED page=%s key_index=%s", expected_page, key_index)
-                        if timings is not None:
-                            timings["gemini_quota_waiting"] = True
-                            timings["gemini_quota_page"] = page_num
-                            timings["gemini_quota_retry_after"] = retry_after
-                            timings["gemini_quota_reason"] = "daily_quota"
                         remaining = _gemini_key_candidates()
                         if remaining:
                             next_index = remaining[0][0]
@@ -1358,6 +1353,7 @@ def _gemini_ocr_page(page, timings: Dict[str, Any] = None, page_num: int = None)
                         if timings is not None:
                             timings["gemini_quota_waiting"] = True
                             timings["gemini_quota_page"] = page_num
+                            timings["gemini_quota_retry_after"] = retry_after
                             timings["gemini_quota_reason"] = "all_keys_exhausted"
                         return ""
 
