@@ -76,10 +76,6 @@ function rangeFromScroll(scrollY, viewportHeight, slotHeight, numPages, toolbarO
   };
 }
 
-export function shouldShowIndexedSearchContext(searchActive, context) {
-  return Boolean(searchActive && context && (context.snippet || context.has_indexed_text));
-}
-
 export default function PdfViewer() {
   const { id } = useParams();
   const [params] = useSearchParams();
@@ -99,7 +95,6 @@ export default function PdfViewer() {
   const [error, setError] = useState(null);
   const [pageHeight, setPageHeight] = useState(null);
   const [visibleRange, setVisibleRange] = useState({ start: 1, end: 12 });
-  const [searchContext, setSearchContext] = useState(null);
 
   const containerRef = useRef(null);
   const pageRefs = useRef({});
@@ -198,7 +193,6 @@ export default function PdfViewer() {
     setBusy(true);
     setError(null);
     setPageHeight(null);
-    setSearchContext(null);
     pageRefs.current = {};
     visibleRangeRef.current = { start: 1, end: 12 };
     setVisibleRange({ start: 1, end: 12 });
@@ -411,31 +405,6 @@ export default function PdfViewer() {
   }, [search.matches, search.matchPages, search.hasSearchQuery, pageParam, numPages, pageHeight, currentPageRef, page]);
 
   useEffect(() => {
-    const q = (search.query || initialQuery || "").trim();
-    if (!q || numPages <= 0) {
-      setSearchContext(null);
-      return undefined;
-    }
-    const contextPage = Math.max(1, Math.min(page.page || initialPage || 1, numPages));
-    const ctrl = new AbortController();
-    api.get(`/pdfs/${id}/search-context`, {
-      params: {
-        q,
-        page: contextPage,
-        share_token: shareToken || undefined,
-      },
-      signal: ctrl.signal,
-    })
-      .then((r) => {
-        if (mountedRef.current) setSearchContext(r.data || null);
-      })
-      .catch((e) => {
-        if (!isCanceled(e) && mountedRef.current) setSearchContext(null);
-      });
-    return () => ctrl.abort();
-  }, [id, shareToken, search.query, initialQuery, search.hasSearchQuery, page.page, initialPage, numPages]);
-
-  useEffect(() => {
     if (numPages <= 0) return undefined;
     const toolbarOffset = search.isSearchActive ? TOOLBAR_OFFSET_WITH_SEARCH : TOOLBAR_OFFSET;
     let raf = 0;
@@ -541,18 +510,6 @@ export default function PdfViewer() {
       />
 
       <div ref={containerRef} className="flex-1 flex flex-col items-center py-8 overflow-x-visible">
-        {shouldShowIndexedSearchContext(search.isSearchActive, searchContext) && (
-          <div
-            className="w-full border border-rule rounded-md bg-card p-4 mb-5 text-sm"
-            style={{ maxWidth: containerWidth }}
-            data-testid="viewer-indexed-search-context"
-          >
-            <div className="overline mb-2">Risultato indicizzato · PAG {searchContext.page_label || searchContext.page}</div>
-            <p className="text-muted2 leading-relaxed">
-              {highlightText(searchContext.snippet || "Contesto indicizzato disponibile", searchContext.query || search.query, { defaultMarkClass: "hl" })}
-            </p>
-          </div>
-        )}
         {busy && <div className="text-mono text-sm text-muted2 py-12" data-testid="pdf-loading">Caricamento PDF…</div>}
         <Document
           key={id}

@@ -50,6 +50,43 @@ def test_format_search_result_keeps_ocr_snippet_non_empty():
     assert result["is_ocr_fallback_snippet"] is True
 
 
+def test_fuzzy_matching_uses_nearby_ocr_word_groups():
+    from pdf_processor import make_snippet, text_matches_query
+
+    text = "Il Nome Gest Intro Voglio Dichiarare Il Nome Gest"
+    query = "Il nome Gesù"
+
+    assert text_matches_query(text, query)
+    snippet = make_snippet(text, query)
+    assert snippet
+    assert "Il Nome Gest" in snippet
+
+
+def test_fuzzy_matching_is_accent_insensitive_for_phrase_windows():
+    from pdf_processor import make_snippet, text_matches_query
+
+    text = "La Tua fedelta grande"
+    query = "La tua fedeltà"
+
+    assert text_matches_query(text, query)
+    assert "La Tua fedelta" in make_snippet(text, query)
+
+
+def test_ocr_snippet_filters_music_noise_and_numbers():
+    import server
+
+    result = server.format_search_result(
+        {"id": "pdf_noisy", "title": "Canto"},
+        {"page": 1, "text": "RE SOL LA 123 ## Il Nome Gest, testo leggibile", "text_raw": "RE SOL LA 123 ## Il Nome Gest, testo leggibile"},
+        "Il nome Gesù",
+        80,
+    )
+
+    assert result["snippet"]
+    assert "##" not in result["snippet"]
+    assert "Il Nome Gest" in result["snippet"]
+
+
 def test_search_context_returns_fuzzy_ocr_snippet(monkeypatch):
     import server
 

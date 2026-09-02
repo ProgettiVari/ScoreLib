@@ -701,8 +701,19 @@ def _token_fuzzy_match(query_token: str, doc_token: str) -> bool:
     if abs(len(query_token) - len(doc_token)) > 1:
         return False
 
+    def ocr_normalize(token: str) -> str:
+        return token.translate(str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"}))
+
+    query_ocr = ocr_normalize(query_token)
+    doc_ocr = ocr_normalize(doc_token)
+    if query_ocr == doc_ocr:
+        return True
+
     if len(query_token) == len(doc_token):
-        return sum(1 for a, b in zip(query_token, doc_token) if a != b) <= 1
+        differences = sum(1 for a, b in zip(query_ocr, doc_ocr) if a != b)
+        if differences <= 1:
+            return True
+        return SequenceMatcher(None, query_ocr, doc_ocr).ratio() >= 0.78
 
     shorter, longer = (query_token, doc_token) if len(query_token) < len(doc_token) else (doc_token, query_token)
     diff = 0

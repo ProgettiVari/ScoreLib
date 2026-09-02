@@ -1697,10 +1697,6 @@ def format_search_result(p: dict, pg: dict, q: str, score: int, snippet: Optiona
         final_snippet = sanitized
     else:
         final_snippet = _select_readable_snippet(raw_snippet)
-    if q and raw_snippet and normalize_search_query(q) not in normalize_search_query(final_snippet):
-        fallback_snippet = _select_readable_snippet(raw_snippet)
-        if fallback_snippet:
-            final_snippet = fallback_snippet
     if not final_snippet and indexed_text:
         final_snippet = _guaranteed_page_snippet(pg, raw_snippet)
 
