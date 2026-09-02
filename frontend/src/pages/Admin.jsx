@@ -291,7 +291,7 @@ export default function Admin() {
                     <span>IP</span>
                     <span className="break-all text-right">{r.ip || "—"}</span>
                   </div>
-                  {(r.status === 'pending' || r.status === 'rejected') && (
+                  {r.status === 'pending' && (
                     <div className="flex justify-end gap-2 pt-1">
                       <button onClick={() => handleRequest(r.email, "approve")} className="p-2 bg-emerald-100 text-emerald-700 rounded-sm hover:bg-emerald-200" aria-label="Approva richiesta"><Check size={16} /></button>
                       <button onClick={() => handleRequest(r.email, "reject")} className="p-2 bg-red-100 text-red-700 rounded-sm hover:bg-red-200" aria-label="Rifiuta richiesta"><X size={16} /></button>
@@ -336,7 +336,7 @@ export default function Admin() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right">
-                      {(r.status === 'pending' || r.status === 'rejected') && (
+                      {r.status === 'pending' && (
                         <div className="flex justify-end gap-2">
                           <button onClick={() => handleRequest(r.email, "approve")} className="p-1.5 bg-emerald-100 text-emerald-700 rounded-sm hover:bg-emerald-200"><Check size={16} /></button>
                           <button onClick={() => handleRequest(r.email, "reject")} className="p-1.5 bg-red-100 text-red-700 rounded-sm hover:bg-red-200"><X size={16} /></button>
