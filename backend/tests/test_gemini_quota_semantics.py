@@ -85,9 +85,9 @@ def test_incomplete_pages_still_wait_when_quota_is_exhausted():
 
 
 def test_gemini_daily_state_round_trips_and_expires(monkeypatch):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(pdf_processor.GEMINI_QUOTA_TIMEZONE).date().isoformat()
     monkeypatch.setattr(pdf_processor, "GEMINI_API_KEYS", ["key0"])
     monkeypatch.setattr(pdf_processor, "GEMINI_API_KEY", "key0")
     monkeypatch.setattr(pdf_processor, "_GEMINI_EXHAUSTED_KEYS", {"key0"})

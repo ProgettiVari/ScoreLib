@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 import fitz  # PyMuPDF
 import httpx
 
@@ -72,11 +73,12 @@ _GEMINI_EXHAUSTED_KEYS = set()
 _GEMINI_KEY_STATS_LOCK = threading.Lock()
 _GEMINI_KEY_STATS: Dict[int, Dict[str, Any]] = {}
 _GEMINI_LAST_QUOTA_EVENT: Optional[Dict[str, Any]] = None
-_GEMINI_ACTIVE_DAY = datetime.now(timezone.utc).date().isoformat()
+GEMINI_QUOTA_TIMEZONE = ZoneInfo("America/Los_Angeles")
+_GEMINI_ACTIVE_DAY = datetime.now(GEMINI_QUOTA_TIMEZONE).date().isoformat()
 
 
 def _gemini_state_day() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(GEMINI_QUOTA_TIMEZONE).date().isoformat()
 
 
 def _roll_gemini_day_if_needed() -> None:
@@ -182,7 +184,7 @@ def get_gemini_admin_status() -> Dict[str, Any]:
         "request_timeout_seconds": GEMINI_REQUEST_TIMEOUT_SECONDS,
         "per_key": per_key,
         "last_quota_event": last_quota_event,
-        "reset_hint": "Disponibile solo se Gemini restituisce Retry-After; altrimenti il reset quota dipende dal piano Google.",
+        "reset_hint": "I limiti giornalieri Gemini vengono azzerati a mezzanotte Pacific Time (America/Los_Angeles). RPM e TPM sono limiti mobili gestiti da Google; Retry-After viene rispettato entro il limite configurato.",
     }
 
 
