@@ -72,6 +72,54 @@ _GEMINI_EXHAUSTED_KEYS = set()
 _GEMINI_KEY_STATS_LOCK = threading.Lock()
 _GEMINI_KEY_STATS: Dict[int, Dict[str, Any]] = {}
 _GEMINI_LAST_QUOTA_EVENT: Optional[Dict[str, Any]] = None
+_GEMINI_ACTIVE_DAY = datetime.now(timezone.utc).date().isoformat()
+
+
+def _gemini_state_day() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _roll_gemini_day_if_needed() -> None:
+    global _GEMINI_ACTIVE_DAY, _GEMINI_LAST_QUOTA_EVENT
+    current_day = _gemini_state_day()
+    if _GEMINI_ACTIVE_DAY == current_day:
+        return
+    _GEMINI_ACTIVE_DAY = current_day
+    _GEMINI_EXHAUSTED_KEYS.clear()
+    _GEMINI_KEY_STATS.clear()
+    _GEMINI_LAST_QUOTA_EVENT = None
+
+
+def get_gemini_daily_state() -> Dict[str, Any]:
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    with _GEMINI_KEY_STATS_LOCK:
+        _roll_gemini_day_if_needed()
+        return {
+            "day": _gemini_state_day(),
+            "exhausted_key_indexes": [idx for idx, key in enumerate(keys) if key in _GEMINI_EXHAUSTED_KEYS],
+            "per_key": [bucket.copy() for bucket in _GEMINI_KEY_STATS.values()],
+            "last_quota_event": _GEMINI_LAST_QUOTA_EVENT.copy() if _GEMINI_LAST_QUOTA_EVENT else None,
+        }
+
+
+def load_gemini_daily_state(state: Optional[Dict[str, Any]]) -> None:
+    global _GEMINI_ACTIVE_DAY, _GEMINI_LAST_QUOTA_EVENT
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    with _GEMINI_KEY_STATS_LOCK:
+        _GEMINI_ACTIVE_DAY = _gemini_state_day()
+        _GEMINI_EXHAUSTED_KEYS.clear()
+        _GEMINI_KEY_STATS.clear()
+        _GEMINI_LAST_QUOTA_EVENT = None
+        if not state or state.get("day") != _gemini_state_day():
+            return
+        for index in state.get("exhausted_key_indexes", []):
+            if isinstance(index, int) and 0 <= index < len(keys) and keys[index]:
+                _GEMINI_EXHAUSTED_KEYS.add(keys[index])
+        for bucket in state.get("per_key", []):
+            if isinstance(bucket, dict) and isinstance(bucket.get("key_index"), int):
+                _GEMINI_KEY_STATS[bucket["key_index"]] = bucket.copy()
+        event = state.get("last_quota_event")
+        _GEMINI_LAST_QUOTA_EVENT = event.copy() if isinstance(event, dict) else None
 
 
 def _gemini_stat_bucket(key_index: int) -> Dict[str, Any]:
@@ -93,6 +141,7 @@ def _record_gemini_key_event(key_index: int, event: str, *, status_code: Optiona
     global _GEMINI_LAST_QUOTA_EVENT
     now = datetime.now(timezone.utc).isoformat()
     with _GEMINI_KEY_STATS_LOCK:
+        _roll_gemini_day_if_needed()
         bucket = _gemini_stat_bucket(key_index)
         if event in {"selected", "success", "rate_limited", "quota_exhausted", "rotations_from", "errors"}:
             bucket[event] += 1
@@ -112,6 +161,8 @@ def _record_gemini_key_event(key_index: int, event: str, *, status_code: Optiona
 
 def get_gemini_admin_status() -> Dict[str, Any]:
     keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    with _GEMINI_KEY_STATS_LOCK:
+        _roll_gemini_day_if_needed()
     exhausted_indexes = [
         idx
         for idx, key in enumerate(keys)
@@ -1282,6 +1333,8 @@ def _find_tesseract_binary() -> str:
 
 def _gemini_key_candidates() -> List[Tuple[int, str]]:
     keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    with _GEMINI_KEY_STATS_LOCK:
+        _roll_gemini_day_if_needed()
     return [
         (idx, key)
         for idx, key in enumerate(keys)

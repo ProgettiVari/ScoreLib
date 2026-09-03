@@ -98,6 +98,29 @@ def _is_admin_user(user: Optional[dict]) -> bool:
     return bool(user.get("is_admin") or user.get("email", "").lower() == ADMIN_EMAIL)
 
 
+async def _restore_gemini_daily_state() -> None:
+    import pdf_processor
+
+    record = await db.config.find_one({"key": "gemini_daily_state"}, {"_id": 0})
+    state = record.get("state") if record else None
+    pdf_processor.load_gemini_daily_state(state)
+    if record and state and state.get("day") != pdf_processor.get_gemini_daily_state()["day"]:
+        await db.config.delete_one({"key": "gemini_daily_state"})
+
+
+async def _persist_gemini_daily_state() -> None:
+    import pdf_processor
+
+    try:
+        await db.config.update_one(
+            {"key": "gemini_daily_state"},
+            {"$set": {"key": "gemini_daily_state", "state": pdf_processor.get_gemini_daily_state(), "updated_at": iso_now()}},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning("GEMINI_DAILY_STATE_PERSIST_FAILED error=%s", repr(exc))
+
+
 def _upload_limits_for_user(is_admin: bool) -> Dict[str, int]:
     return {
         "files_per_request": 5 if is_admin else MAX_USER_UPLOAD_FILES_PER_REQUEST,
@@ -176,6 +199,7 @@ async def lifespan(app: FastAPI):
     tesseract_path = _find_tesseract_binary()
     logger.info(f"OCR diagnostic: TESSERACT_PATH={os.environ.get('TESSERACT_PATH')}, found={tesseract_path}, which='{shutil.which('tesseract')}'")
     await ensure_indexes()
+    await _restore_gemini_daily_state()
     await seed_admin()
     await migrate_single_owner()
     safe_create_task(access_request_reminder_loop())
@@ -2450,6 +2474,7 @@ async def _process_pdf_job_locked(job_id):
                         known_page_records,
                         timings,
                     )
+                    await _persist_gemini_daily_state()
                     if not pages_text:
                         raise RuntimeError(f"OCR extraction returned no page for pdf {pdf['id']} page={page_num}")
                     if timings.get("gemini_quota_waiting"):
