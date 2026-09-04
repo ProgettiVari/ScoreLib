@@ -104,7 +104,8 @@ function usePageController({
       setCurrentPage(p);
       setPageInput(String(p));
       if (!options.skipNotify) onPageChange(p, options.source || "programmatic");
-      return p;
+        flashTimerRef.current = window.setTimeout(() => setFlashPage(null), 950);
+      },
     },
     [numPages, currentPageRef, onPageChange],
   );
@@ -714,15 +715,16 @@ export function usePdfViewerState({
     currentPageRef,
     onPageChange,
   });
+  const scrollToPage = page.scrollToPage;
 
   const flashAndGoToPage = useCallback(
     (targetPage, behavior = "auto") => {
-      page.scrollToPage(targetPage, behavior);
+      scrollToPage(targetPage, behavior);
       setFlashPage(targetPage);
       clearTimeout(flashTimerRef.current);
       flashTimerRef.current = window.setTimeout(() => setFlashPage(null), 950);
     },
-    [page.scrollToPage],
+    [scrollToPage],
   );
 
   const search = useSearchController({
