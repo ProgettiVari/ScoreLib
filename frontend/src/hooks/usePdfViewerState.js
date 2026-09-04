@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import api from "@/lib/api";
+import { normalizeForMatching } from "@/lib/searchText";
 import { useNavigate } from "react-router-dom";
 import { buildMatchPagesFromResults, dedupePageNumbers } from "./viewerSearchUtils";
 
@@ -277,18 +278,32 @@ function useSearchController({
     }
     setMatchNavigationLoading(true);
     const ctrl = new AbortController();
-    api.get(`/search`, { params: { q, share_token: shareToken || undefined }, signal: ctrl.signal })
-      .then((r) => {
-        if (cancelled) return;
-        const items = (r.data && r.data.results) || [];
-        const pages = buildMatchPagesFromResults(items, pdfId);
-        setMatchPages(pages);
+    const normalizedQuery = normalizeForMatching(q);
+    const timer = window.setTimeout(() => {
+      api.get(`/search`, {
+        params: {
+          q: normalizedQuery,
+          pdf_ids: pdfId,
+          share_token: shareToken || undefined,
+        },
+        signal: ctrl.signal,
       })
-      .catch(() => {
-        if (!cancelled) setMatchPages([]);
-      })
-      .finally(() => { if (!cancelled) setMatchNavigationLoading(false); });
-    return () => { cancelled = true; ctrl.abort(); };
+        .then((r) => {
+          if (cancelled) return;
+          const items = (r.data && r.data.results) || [];
+          const pages = buildMatchPagesFromResults(items, pdfId);
+          setMatchPages(pages);
+        })
+        .catch(() => {
+          if (!cancelled) setMatchPages([]);
+        })
+        .finally(() => { if (!cancelled) setMatchNavigationLoading(false); });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
   }, [query, pdfId, shareToken]);
 
   const setSearchNavigationLock = useCallback((locked) => {

@@ -1295,6 +1295,10 @@ async def get_pdf_file(pdf_id: str, user_id: Optional[str] = Depends(get_optiona
         fpath = Path("")
         file_exists = False
 
+    if file_exists:
+        return FileResponse(fpath, media_type="application/pdf", filename=p["filename"])
+
+    # Local file missing — attempt Drive fallback if available
     await log_event(
         "pdf.debug",
         "PDF_DEBUG",
@@ -1308,17 +1312,6 @@ async def get_pdf_file(pdf_id: str, user_id: Optional[str] = Depends(get_optiona
             "storage_type": p.get("storage_type"),
         },
     )
-
-    if file_exists:
-        await log_event(
-            "pdf.debug",
-            "PDF_SERVE_LOCAL",
-            user_id=user_id,
-            meta={"pdf_id": pdf_id, "file_path": str(fpath), "filename": p.get("filename")},
-        )
-        return FileResponse(fpath, media_type="application/pdf", filename=p["filename"])
-
-    # Local file missing — attempt Drive fallback if available
     await log_event(
         "pdf.file_missing",
         "PDF locale mancante, provo fallback Drive",
@@ -1361,6 +1354,7 @@ async def get_pdf_file(pdf_id: str, user_id: Optional[str] = Depends(get_optiona
                 await log_event("pdf.error", f"Drive download fallito: {e}", user_id=user_id, level="error", meta={"pdf_id": pdf_id, "drive_file_id": p.get("drive_file_id"), "stage": "get_pdf_file_fallback"})
 
     raise HTTPException(status_code=404, detail="File non trovato")
+
 
 @api.post("/pdfs/{pdf_id}/reload")
 async def reload_pdf(pdf_id: str, user_id: str = Depends(get_current_user_id)):
@@ -1956,7 +1950,11 @@ async def search(
     if pdf_ids_list:
         text_filter["pdf_id"] = {"$in": pdf_ids_list}
 
-    text_cursor = db.pdf_pages.find(text_filter).limit(candidate_limit)
+    text_cursor = db.pdf_pages.find(text_filter)
+    if pdf_ids_list:
+        text_cursor = text_cursor.sort([("pdf_id", 1), ("page", 1)])
+    else:
+        text_cursor = text_cursor.sort([("pdf_id", 1), ("page", 1)]).limit(candidate_limit)
     signature_query = build_content_signature(raw_q)
     
     # First pass: collect all text pages to apply fuzzy token matching
