@@ -280,7 +280,7 @@ export default function Admin() {
                       <div className="font-bold break-words">{r.name}</div>
                       <div className="text-xs text-muted3 text-mono break-all">{r.email}</div>
                     </div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                    <span key={r.status} className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 animate-status-pop ${
                       r.status === 'approved' ? 'bg-emerald-500 text-emerald-950 dark:bg-emerald-400 dark:text-emerald-950' :
                       r.status === 'rejected' || r.status === 'banned' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                     }`}>
@@ -328,7 +328,7 @@ export default function Admin() {
                     </td>
                     <td className="py-3 px-4 text-xs text-mono">{r.ip || "—"}</td>
                     <td className="py-3 px-4">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      <span key={r.status} className={`text-[10px] font-bold px-2 py-0.5 rounded-full animate-status-pop ${
                         r.status === 'approved' ? 'bg-emerald-500 text-emerald-950 dark:bg-emerald-400 dark:text-emerald-950' : 
                         r.status === 'rejected' || r.status === 'banned' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                       }`}>

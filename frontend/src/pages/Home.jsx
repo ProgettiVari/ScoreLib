@@ -200,7 +200,7 @@ export default function Home() {
             <li className="py-10 text-center text-muted2">Nessun risultato per "<span className="text-ink">{q}</span>"</li>
           )}
           {results.map((r, idx) => (
-            <li key={idx} className="py-5 border-b border-rule animate-fade-in">
+            <li key={idx} className="py-5 border-b border-rule animate-result-in" style={{ animationDelay: `${Math.min(idx, 6) * 35}ms` }}>
               <button
                 onClick={async () => {
                   addRecentSearch(q);

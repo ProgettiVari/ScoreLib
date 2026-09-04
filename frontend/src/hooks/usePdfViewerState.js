@@ -662,6 +662,8 @@ export function usePdfViewerState({
 }) {
   const navigate = useNavigate();
   const programmaticScrollRef = useRef(false);
+  const [flashPage, setFlashPage] = useState(null);
+  const flashTimerRef = useRef(null);
   const searchDriverDoneRef = useRef(false);
   const initialJumpPendingRef = useRef(initialPage > 1);
   const currentPageRef = useRef(initialPage);
@@ -713,6 +715,16 @@ export function usePdfViewerState({
     onPageChange,
   });
 
+  const flashAndGoToPage = useCallback(
+    (targetPage, behavior = "auto") => {
+      page.scrollToPage(targetPage, behavior);
+      setFlashPage(targetPage);
+      clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => setFlashPage(null), 950);
+    },
+    [page.scrollToPage],
+  );
+
   const search = useSearchController({
     pdfId,
     initialQuery,
@@ -722,7 +734,7 @@ export function usePdfViewerState({
     searchDriverDoneRef,
     getCurrentPage,
     // Use immediate scroll (auto) for search navigation to avoid smooth/jerky animations
-    goToPage: page.scrollToPage,
+    goToPage: flashAndGoToPage,
     numPages,
   });
 
@@ -742,6 +754,7 @@ export function usePdfViewerState({
     return () => {
       clearTimeout(scrollSyncTimerRef.current);
       clearTimeout(urlSyncTimerRef.current);
+      clearTimeout(flashTimerRef.current);
     };
   }, [pdfId, initialPage, numPages]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -749,6 +762,7 @@ export function usePdfViewerState({
     return () => {
       clearTimeout(scrollSyncTimerRef.current);
       clearTimeout(urlSyncTimerRef.current);
+      clearTimeout(flashTimerRef.current);
     };
   }, []);
 
@@ -828,6 +842,8 @@ export function usePdfViewerState({
     handleScroll,
     completeInitialJump,
     currentPageRef,
+    flashPage,
+    flashAndGoToPage,
   };
 }
 

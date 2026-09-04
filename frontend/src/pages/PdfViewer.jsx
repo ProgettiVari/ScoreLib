@@ -156,6 +156,8 @@ export default function PdfViewer() {
     handleScroll,
     completeInitialJump,
     currentPageRef,
+    flashPage,
+    flashAndGoToPage,
   } = usePdfViewerState({
     pdfId: id,
     initialPage,
@@ -233,7 +235,7 @@ export default function PdfViewer() {
     if (targetPage === currentPageRef.current) return;
     if (pendingScrollPageRef.current != null) return;
 
-    page.goToPage(targetPage);
+    flashAndGoToPage(targetPage);
   }, [meta?.page_labels, numPages, pageParam]);
 
   /* eslint-enable react-hooks/exhaustive-deps */
@@ -332,14 +334,14 @@ export default function PdfViewer() {
 
   useEffect(() => {
     if (numPages > 0 && pageHeight && initialPage > 1 && !initialScrollDoneRef.current) {
-      page.scrollToPage(initialPage, "auto");
+      flashAndGoToPage(initialPage, "auto");
       return;
     }
     if (numPages > 0 && pageHeight && !initialScrollDoneRef.current && initialPage <= 1) {
       completeInitialJump();
     }
     return undefined;
-  }, [numPages, pageHeight, initialPage, page, completeInitialJump]);
+  }, [numPages, pageHeight, initialPage, flashAndGoToPage, completeInitialJump]);
 
   useEffect(() => {
     if (!search.hasSearchQuery || numPages === 0) return undefined;
@@ -362,7 +364,7 @@ export default function PdfViewer() {
       const target = search.matchPages[0];
       let attempts = 0;
       if (target !== currentPageRef.current) {
-        page.scrollToPage(target, "auto");
+        flashAndGoToPage(target, "auto");
       }
       const tryScrollOnTarget = () => {
         if (cancelled) return;
@@ -392,7 +394,7 @@ export default function PdfViewer() {
         if (!el) continue;
         const match = el.querySelector("mark.hl");
         if (match) {
-          if (p !== currentPageRef.current) page.scrollToPage(p, "auto");
+          if (p !== currentPageRef.current) flashAndGoToPage(p, "auto");
           initialSearchScrollRef.current = true;
           return;
         }
@@ -540,7 +542,7 @@ export default function PdfViewer() {
                     if (el) pageRefs.current[pageNumber] = el;
                     else delete pageRefs.current[pageNumber];
                   }}
-                  className="absolute left-0 right-0 mx-auto bg-card shadow-md border border-rule overflow-visible"
+                  className={`absolute left-0 right-0 mx-auto bg-card shadow-md border border-rule overflow-visible ${flashPage === pageNumber ? "animate-page-flash" : ""}`}
                   style={{
                     top: (pageNumber - 1) * slotHeight,
                     width: containerWidth,
