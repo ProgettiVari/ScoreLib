@@ -104,8 +104,7 @@ function usePageController({
       setCurrentPage(p);
       setPageInput(String(p));
       if (!options.skipNotify) onPageChange(p, options.source || "programmatic");
-        flashTimerRef.current = window.setTimeout(() => setFlashPage(null), 950);
-      },
+      return p;
     },
     [numPages, currentPageRef, onPageChange],
   );
