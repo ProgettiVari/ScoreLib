@@ -1077,7 +1077,7 @@ async def list_pdfs(
     if favorite is not None:
         query["is_favorite"] = favorite
     if tag:
-        query["tags"] = tag.lower()
+        query["tags"] = {"$regex": f"^{re.escape(tag.strip())}$", "$options": "i"}
     sort_mapping = {
         "date_asc": [("created_at", 1)],
         "date_desc": [("created_at", -1)],
@@ -1798,8 +1798,9 @@ async def search(
     pdf_ids_list = [pid.strip() for pid in (pdf_ids or "").split(",") if pid.strip()] or None
     
     # Se tag è selezionato, filtra per PDF IDs che hanno quel tag
-    if tag:
-        tag_pdfs = await db.pdfs.find({"tags": tag.lower()}, {"_id": 0, "id": 1}).to_list(1000)
+    if tag and tag.strip():
+        tag_pattern = {"$regex": f"^{re.escape(tag.strip())}$", "$options": "i"}
+        tag_pdfs = await db.pdfs.find({"tags": tag_pattern}, {"_id": 0, "id": 1}).to_list(1000)
         tag_pdf_ids = set(p["id"] for p in tag_pdfs)
         if pdf_ids_list:
             pdf_ids_list = [pid for pid in pdf_ids_list if pid in tag_pdf_ids]

@@ -34,7 +34,7 @@ export function useSearch(q, { pdfIdsStr = "", shareToken = "", tag = "" } = {})
         const params = { q: normalizeForMatching(q) };
         if (pdfIdsStr) params.pdf_ids = pdfIdsStr;
         if (shareToken) params.share_token = shareToken;
-        if (tag) params.tag = tag;
+        if (tag && tag.trim()) params.tag = tag.trim();
         const r = await api.get("/search", { params, signal: ctrl.signal });
         if (alive && mountedRef.current) setResults(r.data.results || []);
       } catch (e) {

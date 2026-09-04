@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Lock, Unlock } from "lucide-react";
+import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Pencil, Lock, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -266,7 +266,9 @@ export default function Library() {
               <button onClick={() => navigate(`/viewer/${p.id}`)} className="flex-1 text-left flex items-center gap-3 min-w-0">
                 <FileText size={18} strokeWidth={1.5} className="shrink-0 text-muted2" />
                 <div className="min-w-0">
-                  <div className="font-display text-lg font-medium group-hover:underline decoration-2 underline-offset-4 truncate">{p.title}</div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-display text-lg font-medium group-hover:underline decoration-2 underline-offset-4 truncate">{p.title}</span>
+                  </div>
                   <div className="flex items-center gap-2 flex-wrap mt-0.5">
                     <span className="text-mono text-[10px] text-muted2">
                       {p.created_at?.slice(0, 10)} - {p.status === "ready" ? `${p.pages}pp` : p.status === "error" ? "errore" : "elaborazione"} - {(p.size / 1024).toFixed(0)} KB
@@ -279,6 +281,14 @@ export default function Library() {
                     ))}
                   </div>
                 </div>
+              </button>
+              <button
+                onClick={() => setEditTagsFor(p)}
+                className="btn-ghost shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                title="Modifica tag"
+                aria-label={`Modifica tag per ${p.title}`}
+              >
+                <Pencil size={14} />
               </button>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 shrink-0">
                 {isAdmin && (
