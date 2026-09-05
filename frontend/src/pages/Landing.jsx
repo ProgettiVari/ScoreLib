@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, UploadCloud, Share2, BookOpen, ArrowRight, Coffee } from "lucide-react";
+import { Search, UploadCloud, Share2, BookOpen, ArrowRight, Coffee, Moon, Sun } from "lucide-react";
 import TrebleClef from "@/components/TrebleClef";
 import { applyThemeSetting, resolveInitialTheme } from "@/lib/theme";
 import api from "@/lib/api";
@@ -76,15 +76,15 @@ export default function Landing() {
               onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
               className="relative inline-flex h-8 w-14 items-center rounded-full border border-rule bg-canvas2 p-1 transition-colors"
             >
-              <span className="absolute left-2 text-[10px]">♪</span>
-              <span className="absolute right-2 text-[10px]">♭</span>
+              <Sun size={11} className="absolute left-2 text-muted2" aria-hidden="true" />
+              <Moon size={11} className="absolute right-2 text-muted2" aria-hidden="true" />
               <span
-                className={`inline-block h-6 w-6 rounded-full bg-ink text-[10px] text-white flex items-center justify-center transition-transform ${theme === "dark" ? "translate-x-6" : "translate-x-0"}`}
+                className={`inline-block h-6 w-6 rounded-full bg-ink text-white flex items-center justify-center transition-transform ${theme === "dark" ? "translate-x-6" : "translate-x-0"}`}
               >
-                {theme === "dark" ? "♭" : "♪"}
+                {theme === "dark" ? <Moon size={12} aria-hidden="true" /> : <Sun size={12} aria-hidden="true" />}
               </span>
             </button>
-            <button type="button" onClick={handleCoffee} className="btn-ghost gap-2"><Coffee size={15} /> ☕ Offrimi un caffè</button>
+            <button type="button" onClick={handleCoffee} className="btn-ghost gap-2"><Coffee size={15} /> Offrimi un caffè</button>
             <Link to="/login" className="btn-ghost">Accedi</Link>
           </div>
         </div>
