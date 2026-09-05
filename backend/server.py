@@ -41,7 +41,7 @@ from auth_utils import (
     hash_password, verify_password, create_jwt, decode_jwt,
     get_client_ip, get_current_user_id, get_optional_user_id,
 )
-from pdf_processor import build_apostrophe_tolerant_regex, build_content_signature, extract_pages, compress_pdf, make_snippet, clean_pdf_text, normalize_pdf_text, normalize_search_query, text_matches_query, extract_page_metadata, _calculate_match_quality, _content_signature_similarity
+from pdf_processor import build_apostrophe_tolerant_regex, build_content_signature, extract_pages, compress_pdf, make_snippet, clean_pdf_text, normalize_pdf_text, normalize_search_query, text_matches_query, extract_page_metadata, _calculate_match_quality, _content_signature_similarity, gemini_daily_quota_available
 import google_integration as gi
 
 ROOT_DIR = Path(__file__).parent
@@ -1143,6 +1143,11 @@ async def upload_pdf(
             is_admin,
         )
 
+        if preflight["ocr_candidate_pages"] > 0 and not gemini_daily_quota_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Oggi puoi caricare solo PDF completamente testuali: le scansioni e le immagini richiedono OCR. Riprova più tardi o domani.",
+            )
         # Save PDF without compression first (fast path for response)
         # Compression will happen in background job during OCR processing
         pdf_id = f"pdf_{uuid.uuid4().hex[:12]}"
