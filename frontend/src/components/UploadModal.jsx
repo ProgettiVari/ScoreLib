@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { UploadCloud, X, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 import api from "@/lib/api";
+import PlayfulLoader from "@/components/PlayfulLoader";
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -327,7 +328,10 @@ export default function UploadModal({ open, onClose, onComplete, libraryId }) {
                 <div className="h-2 bg-canvas3 rounded-sm overflow-hidden border border-rule">
                   <div className="h-full bg-ink transition-all" style={{ width: `${progress}%` }} />
                 </div>
-                <p className="text-mono text-xs text-muted2 mt-2">{progress}% inviato. L'indicizzazione continua in background.</p>
+                <PlayfulLoader
+                  className="mt-3 justify-start text-left text-mono text-xs"
+                  messages={["Il PDF è in viaggio.", "L'indice sta prendendo forma.", "Controllo pagine e accordi.", "Ancora qualche battuta e ci siamo."]}
+                />
               </div>
             )}
           </>

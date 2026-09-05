@@ -6,6 +6,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import { toast } from "sonner";
 import api, { API, getAuthToken } from "@/lib/api";
 import ViewerToolbar from "@/components/ViewerToolbar";
+import PlayfulLoader from "@/components/PlayfulLoader";
 import { highlightText, stripChords } from "@/lib/searchText";
 import usePdfViewerState, {
   TOOLBAR_OFFSET,
@@ -512,7 +513,7 @@ export default function PdfViewer() {
       />
 
       <div ref={containerRef} className="flex-1 flex flex-col items-center py-8 overflow-x-visible">
-        {busy && <div className="text-mono text-sm text-muted2 py-12" data-testid="pdf-loading">Caricamento PDF…</div>}
+        {busy && <div data-testid="pdf-loading"><PlayfulLoader className="py-12 text-mono text-sm" /></div>}
         <Document
           key={id}
           file={fileObj}

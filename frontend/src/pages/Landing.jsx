@@ -64,12 +64,12 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-canvas">
       <header className="sticky top-0 z-20 bg-canvas/90 backdrop-blur border-b border-rule">
-        <div className="max-w-6xl mx-auto px-6 md:px-12 py-5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 md:px-12 py-4 sm:py-5 flex items-center justify-between gap-3 flex-nowrap">
+          <div className="flex min-w-0 shrink items-center gap-2.5">
             <TrebleClef size={26} />
-            <span className="font-display font-bold text-xl tracking-tight">Scorelib</span>
+            <span className="font-display font-bold text-lg sm:text-xl tracking-tight whitespace-nowrap">Scorelib</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
             <button
               type="button"
               aria-label="Cambia tema landing"
@@ -84,22 +84,25 @@ export default function Landing() {
                 {theme === "dark" ? <Moon size={12} className="text-black" aria-hidden="true" /> : <Sun size={12} aria-hidden="true" />}
               </span>
             </button>
-            <button type="button" onClick={handleCoffee} className="btn-ghost gap-2"><Coffee size={15} /> Offrimi un caffè</button>
-            <Link to="/login" className="btn-ghost">Accedi</Link>
+            <button type="button" onClick={handleCoffee} className="btn-ghost gap-2 whitespace-nowrap" aria-label="Offrimi un caffè">
+              <Coffee size={15} />
+              <span className="hidden sm:inline">Offrimi un caffè</span>
+            </button>
+            <Link to="/login" className="btn-ghost whitespace-nowrap">Accedi</Link>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 md:px-12 pt-16 md:pt-24 pb-20 grid lg:grid-cols-2 gap-14 items-center">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 md:px-12 pt-12 sm:pt-16 md:pt-24 pb-16 sm:pb-20 grid lg:grid-cols-2 gap-10 lg:gap-14 items-center">
         <div>
           <p className="overline mb-6">GESTIONE SPARTITI PDF</p>
-          <h1 className="font-display font-black text-5xl sm:text-6xl leading-[0.95] tracking-tighter mb-6">
+          <h1 className="font-display font-black text-4xl sm:text-5xl lg:text-6xl leading-[0.95] tracking-tighter mb-6">
             Tutti i tuoi<br />spartiti.<br />Un solo posto.
           </h1>
           <p className="text-muted2 text-lg max-w-md mb-10 leading-relaxed">
             Carica, organizza e trova ogni spartito in pochi secondi. Ricerca full-text, tag, condivisione e lettore integrato.
           </p>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <Link to="/login" className="btn-primary">
               Accedi <ArrowRight size={16} />
             </Link>

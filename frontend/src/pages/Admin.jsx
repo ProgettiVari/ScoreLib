@@ -29,6 +29,7 @@ export default function Admin() {
   const [busy, setBusy] = useState(false);
   const [master, setMaster] = useState(null);
   const [gemini, setGemini] = useState(null);
+  const [maintenance, setMaintenance] = useState(null);
 
   const isAdmin = user?.is_admin;
   const visibleRequests = showAllRequests ? requests : requests.slice(0, 3);
@@ -37,18 +38,20 @@ export default function Admin() {
   const load = async () => {
     setBusy(true);
     try {
-      const [s, m, r, u, g] = await Promise.all([
+      const [s, m, r, u, g, maintenanceResponse] = await Promise.all([
         api.get("/admin/stats"),
         api.get("/admin/master-drive/status"),
         api.get("/admin/access-requests"),
         api.get("/admin/users").catch(() => ({ data: { users: [] } })),
-        api.get("/admin/gemini/status").catch(() => ({ data: null }))
+        api.get("/admin/gemini/status").catch(() => ({ data: null })),
+        api.get("/system/status").catch(() => ({ data: { maintenance: false } }))
       ]);
       setStats(s.data); 
       setMaster(m.data);
       setRequests(r.data || []);
       setUsers(u.data.users || []);
       setGemini(g.data || null);
+      setMaintenance(maintenanceResponse.data || { maintenance: false });
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally { setBusy(false); }
@@ -86,6 +89,23 @@ export default function Admin() {
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore reset dati odierni");
+    }
+  };
+  const toggleMaintenance = async () => {
+    const password = window.prompt(
+      maintenance?.maintenance ? "Inserisci la password per disattivare la manutenzione:" : "Inserisci la password per attivare la manutenzione:",
+      "",
+    );
+    if (!password) return;
+    try {
+      const response = await api.post("/admin/maintenance", {
+        password,
+        enabled: !maintenance?.maintenance,
+      });
+      setMaintenance(response.data);
+      toast.success(response.data.maintenance ? "Sito in manutenzione" : "Manutenzione disattivata");
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     }
   };
   const disconnectMaster = async () => {
@@ -168,6 +188,23 @@ export default function Admin() {
       </div>
 
       <div className="space-y-12">
+        <section className="border border-rule rounded-md bg-card p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="overline mb-2">STATO SITO</p>
+              <h2 className="font-display text-xl font-bold">
+                {maintenance?.maintenance ? "Il sito è in manutenzione" : "Il sito è operativo"}
+              </h2>
+              {maintenance?.maintenance && (
+                <p className="mt-1 text-sm text-muted2">Attivata da {maintenance.activated_by || "amministratore"}.</p>
+              )}
+            </div>
+            <button type="button" onClick={toggleMaintenance} className={maintenance?.maintenance ? "btn-ghost border border-rule" : "btn-primary"}>
+              {maintenance?.maintenance ? "Disattiva manutenzione" : "Metti il sito in manutenzione"}
+            </button>
+          </div>
+        </section>
+
         {/* Stats Quick Look */}
         {stats && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

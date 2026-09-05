@@ -20,7 +20,7 @@ from typing import List, Tuple, Optional, Dict, Any
 
 import aiofiles
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import Response, FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -48,6 +48,10 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
+
+def _sanitize_pdf_filename(name: str) -> str:
+    safe_name = re.sub(r"[^\w\-.]", "_", (name or "").strip())
+    return safe_name if safe_name.lower().endswith(".pdf") else f"{safe_name}.pdf"
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -223,6 +227,27 @@ app = FastAPI(
     redoc_url="/redoc" if ENABLE_DOCS else None,
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
+
+async def _maintenance_state() -> dict:
+    record = await db.config.find_one({"key": "maintenance"}, {"_id": 0})
+    return record or {"enabled": False}
+
+async def _request_is_admin(request: Request) -> bool:
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "): return False
+    user_id = decode_jwt(authorization.split(" ", 1)[1].strip())
+    user = await db.users.find_one({"user_id": user_id}) if user_id else None
+    return _is_admin_user(user)
+
+@app.middleware("http")
+async def enforce_maintenance(request: Request, call_next):
+    public_paths = {"/api/auth/login", "/api/auth/login/verify-otp", "/api/system/status"}
+    if request.url.path.startswith("/api") and request.url.path not in public_paths and request.method != "OPTIONS":
+        state = await _maintenance_state()
+        if state.get("enabled") and not await _request_is_admin(request):
+            return JSONResponse(status_code=503, content={"maintenance": True, "message": "Scorelib è temporaneamente in manutenzione. Riprova tra poco."})
+    return await call_next(request)
+
 # Use the same X-Forwarded-For-aware IP resolution used for logging.
 limiter = Limiter(key_func=get_client_ip)
 app.state.limiter = limiter
@@ -851,7 +876,8 @@ async def login(payload: LoginIn, request: Request):
                 "created_at": iso_now(),
             }
             await db.users.insert_one(u)
-        if not verify_password(payload.password, u["password_hash"]):
+        live_password = get_admin_password()
+        if not live_password or not secrets.compare_digest(payload.password, live_password):
             await log_event("auth.login_failed", f"Tentativo login admin fallito", level="warn", meta={"email": email, "ip": ip})
             raise HTTPException(status_code=401, detail="Credenziali non valide")
         token = create_jwt(u["user_id"])
@@ -1151,7 +1177,7 @@ async def upload_pdf(
         # Save PDF without compression first (fast path for response)
         # Compression will happen in background job during OCR processing
         pdf_id = f"pdf_{uuid.uuid4().hex[:12]}"
-        safe_filename = re.sub(r"[^\w\-\.]", "_", filename)
+        safe_filename = _sanitize_pdf_filename(filename)
         fpath = UPLOAD_DIR / f"{pdf_id}_{safe_filename}"
         save_start = time.perf_counter()
         fpath.write_bytes(content)
@@ -1264,6 +1290,15 @@ async def patch_pdf(pdf_id: str, payload: PdfPatchIn, user_id: str = Depends(get
         if "title" in update:
             update["title_normalized"] = normalize_pdf_text(update["title"])
         await db.pdfs.update_one({"id": pdf_id}, {"$set": update})
+        if "title" in update and p.get("drive_file_id"):
+            master = await get_master_drive()
+            refresh_token = master.get("refresh_token") if master else None
+            if refresh_token:
+                renamed = await asyncio.to_thread(gi.rename_drive_file, refresh_token, p["drive_file_id"], _sanitize_pdf_filename(update["title"]))
+                if not renamed:
+                    await log_event("drive_backup_error", f"Rinomina Drive non riuscita per PDF {pdf_id}", user_id=user_id, level="error", meta={"pdf_id": pdf_id, "drive_file_id": p["drive_file_id"], "stage": "rename"})
+            else:
+                await log_event("drive_backup_error", f"Token Drive non disponibile per rinominare PDF {pdf_id}", user_id=user_id, level="error", meta={"pdf_id": pdf_id, "drive_file_id": p["drive_file_id"], "stage": "rename"})
     p = await db.pdfs.find_one({"id": pdf_id}, {"_id": 0})
     return _serialize_pdf(p)
 
@@ -2335,6 +2370,22 @@ async def reset_today_data(payload: dict, user_id: str = Depends(require_admin))
             "logs": logs_deleted.deleted_count,
         },
     }
+
+@api.get("/system/status")
+async def system_status():
+    state = await _maintenance_state()
+    return {"maintenance": bool(state.get("enabled")), "activated_by": state.get("activated_by"), "activated_at": state.get("activated_at")}
+
+@api.post("/admin/maintenance")
+async def set_maintenance(payload: dict, user_id: str = Depends(require_admin)):
+    live_password = ADMIN_RESET_PASSWORD
+    provided = (payload.get("password") or "").strip()
+    if not live_password or not secrets.compare_digest(provided, live_password): raise HTTPException(status_code=403, detail="Password non valida")
+    enabled = bool(payload.get("enabled"))
+    state = {"key": "maintenance", "enabled": enabled, "activated_by": user_id if enabled else None, "activated_at": iso_now() if enabled else None, "updated_at": iso_now()}
+    await db.config.update_one({"key": "maintenance"}, {"$set": state}, upsert=True)
+    await log_event("admin.maintenance", "Modalità manutenzione " + ("attivata" if enabled else "disattivata"), user_id=user_id, level="warn" if enabled else "info", meta={"enabled": enabled})
+    return {"maintenance": enabled, "activated_by": state["activated_by"], "activated_at": state["activated_at"]}
 
 # Serve manifest.json
 @app.get("/manifest.json")

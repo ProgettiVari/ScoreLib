@@ -111,6 +111,39 @@ function RootRoute() {
   return user ? <Home /> : <Landing />;
 }
 
+function MaintenanceScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-canvas px-6 text-center">
+      <div className="max-w-md">
+        <p className="overline mb-4">SCORELIB</p>
+        <h1 className="font-display text-4xl font-black tracking-tight mb-4">Torniamo tra poco</h1>
+        <p className="text-muted2 leading-relaxed">Il sito è temporaneamente in manutenzione. I tuoi spartiti saranno di nuovo disponibili a breve.</p>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeShell() {
+  const { user, loading } = useAuth();
+  const [maintenance, setMaintenance] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.get("/system/status")
+      .then((response) => { if (alive) setMaintenance(Boolean(response.data?.maintenance)); })
+      .catch(() => {});
+    const onMaintenance = () => setMaintenance(true);
+    window.addEventListener("scorelib-maintenance", onMaintenance);
+    return () => {
+      alive = false;
+      window.removeEventListener("scorelib-maintenance", onMaintenance);
+    };
+  }, []);
+
+  if (maintenance && !loading && !user?.is_admin) return <MaintenanceScreen />;
+  return <AppShell />;
+}
+
 function AppShell() {
   const location = useLocation();
 
@@ -157,7 +190,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <AppShell />
+        <RuntimeShell />
         <Toaster />
       </BrowserRouter>
     </AuthProvider>

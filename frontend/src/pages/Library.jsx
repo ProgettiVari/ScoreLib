@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Pencil, Lock, Unlock, X } from "lucide-react";
+import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Lock, Unlock, X } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import UploadModal from "@/components/UploadModal";
 import TagEditor from "@/components/TagEditor";
+import EditableTitle from "@/components/EditableTitle";
+import PlayfulLoader from "@/components/PlayfulLoader";
 
 function RenamePdfModal({ pdf, onClose, onRename }) {
   const [title, setTitle] = useState(pdf?.title || "");
@@ -292,7 +294,9 @@ export default function Library() {
           </div>
 
       {loading ? (
-        <div className="border border-dashed border-rule rounded-md p-16 text-center text-muted2 text-mono text-sm">Caricamento libreria...</div>
+        <div className="border border-dashed border-rule rounded-md p-16 text-center text-mono text-sm">
+          <PlayfulLoader />
+        </div>
       ) : loadError ? (
         <div className="border border-dashed border-rule rounded-md p-16 text-center">
           <FileText size={32} className="mx-auto mb-3 text-muted3" strokeWidth={1.5} />
@@ -319,15 +323,21 @@ export default function Library() {
                   className={p.is_favorite ? "text-ink dark:text-amber-400" : "text-muted3 hover:text-ink dark:hover:text-amber-400"} 
                 />
               </button>
-              <button onClick={() => navigate(`/viewer/${p.id}`)} className="flex-1 text-left flex items-center gap-3 min-w-0">
+              <div
+                className="flex-1 text-left flex items-center gap-3 min-w-0 cursor-pointer"
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(`/viewer/${p.id}`)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") navigate(`/viewer/${p.id}`);
+                }}
+              >
                 <FileText size={18} strokeWidth={1.5} className="shrink-0 text-muted2" />
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-display text-lg font-medium group-hover:underline decoration-2 underline-offset-4 truncate">{p.title}</span>
-                  </div>
+                  <EditableTitle title={p.title} onEdit={() => setRenameFor(p)} />
                   <div className="flex items-center gap-2 flex-wrap mt-0.5">
                     <span className="text-mono text-[10px] text-muted2">
-                      {p.created_at?.slice(0, 10)} - {p.status === "ready" ? `${p.pages}pp` : p.status === "error" ? "errore" : "elaborazione"} - {(p.size / 1024).toFixed(0)} KB
+                      {p.created_at?.slice(0, 10)} - {p.status === "ready" ? `${p.pages}pp` : p.status === "error" ? "errore" : <PlayfulLoader className="inline-flex justify-start text-[10px]" />} - {(p.size / 1024).toFixed(0)} KB
                     </span>
                     {p.is_protected && (
                       <span className="text-mono text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-sm font-bold">PROTETTO</span>
@@ -337,15 +347,7 @@ export default function Library() {
                     ))}
                   </div>
                 </div>
-              </button>
-              <button
-                onClick={() => setRenameFor(p)}
-                className="btn-ghost shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
-                title="Rinomina PDF"
-                aria-label={`Rinomina ${p.title}`}
-              >
-                <Pencil size={14} />
-              </button>
+              </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 shrink-0">
                 {isAdmin && (
                   <button 

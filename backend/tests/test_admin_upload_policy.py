@@ -151,4 +151,66 @@ def test_gemini_daily_quota_available_false_when_all_keys_exhausted(monkeypatch)
     assert pdf_processor.gemini_daily_quota_available() is False
 
 
+def test_patch_pdf_renames_existing_drive_file(monkeypatch):
+    import server
+
+    class Pdfs:
+        def __init__(self):
+            self.document = {"id": "pdf_1", "owner_id": "user_1", "title": "Old", "drive_file_id": "drive_1"}
+
+        async def find_one(self, query, projection=None):
+            return dict(self.document)
+
+        async def update_one(self, query, update):
+            self.document.update(update.get("$set", {}))
+
+    class Users:
+        async def find_one(self, query):
+            return {"user_id": "user_1", "email": "user@example.com"}
+
+    class Config:
+        async def find_one(self, query):
+            return {"key": "master_drive", "refresh_token": "refresh_1"}
+
+    fake_db = type("FakeDB", (), {"pdfs": Pdfs(), "users": Users(), "config": Config()})()
+    renamed = []
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "_user_can_access_pdf", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(server.gi, "rename_drive_file", lambda *args: renamed.append(args) or True)
+    monkeypatch.setattr(server, "log_event", lambda *args, **kwargs: asyncio.sleep(0))
+
+    result = asyncio.run(server.patch_pdf("pdf_1", server.PdfPatchIn(title="New Score"), "user_1"))
+
+    assert result["title"] == "New Score"
+    assert renamed == [("refresh_1", "drive_1", "New_Score.pdf")]
+
+
+def test_patch_pdf_does_not_rename_without_drive_file(monkeypatch):
+    import server
+
+    class Pdfs:
+        def __init__(self):
+            self.document = {"id": "pdf_1", "owner_id": "user_1", "title": "Old"}
+
+        async def find_one(self, query, projection=None):
+            return dict(self.document)
+
+        async def update_one(self, query, update):
+            self.document.update(update.get("$set", {}))
+
+    class Users:
+        async def find_one(self, query):
+            return {"user_id": "user_1", "email": "user@example.com"}
+
+    fake_db = type("FakeDB", (), {"pdfs": Pdfs(), "users": Users()})()
+    renamed = []
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "_user_can_access_pdf", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(server.gi, "rename_drive_file", lambda *args: renamed.append(args) or True)
+
+    asyncio.run(server.patch_pdf("pdf_1", server.PdfPatchIn(title="New Score"), "user_1"))
+
+    assert renamed == []
+
+
 

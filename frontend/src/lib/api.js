@@ -35,5 +35,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const body = error.response?.data;
+    if (error.response?.status === 503 && body?.maintenance === true) {
+      window.dispatchEvent(new CustomEvent("scorelib-maintenance", { detail: body }));
+    }
+    return Promise.reject(error);
+  },
+);
+
 export default api;
 export { BACKEND_URL, getAuthToken };

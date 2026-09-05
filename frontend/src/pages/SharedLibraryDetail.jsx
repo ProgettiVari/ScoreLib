@@ -1,11 +1,60 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Copy, FileText, Plus, Trash2, Search as SearchIcon, ArrowLeft } from "lucide-react";
+import { Copy, FileText, Plus, Trash2, Search as SearchIcon, ArrowLeft, X } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useSearch } from "@/hooks/useSearch";
 import SearchResults from "@/components/SearchResults";
 import { useAuth } from "@/context/AuthContext";
+import EditableTitle from "@/components/EditableTitle";
+
+function RenamePdfModal({ pdf, onClose, onRename }) {
+  const [title, setTitle] = useState(pdf?.title || "");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const save = async () => {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      toast.error("Il titolo non può essere vuoto");
+      return;
+    }
+    try {
+      const response = await api.patch(`/pdfs/${pdf.id}`, { title: nextTitle });
+      onRename(response.data);
+      onClose();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Errore rinomina PDF");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-md border border-rule bg-card p-6" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-display text-xl font-bold">Rinomina PDF</h2>
+          <button type="button" onClick={onClose} className="btn-ghost" aria-label="Chiudi"><X size={16} /></button>
+        </div>
+        <input
+          ref={inputRef}
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") save(); }}
+          className="input-base mb-4 w-full"
+          aria-label="Titolo PDF"
+        />
+        <div className="flex justify-end gap-2 border-t border-rule pt-3">
+          <button type="button" onClick={onClose} className="btn-ghost border border-rule px-4 py-2">Annulla</button>
+          <button type="button" onClick={save} className="btn-primary">Salva</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function SharedLibraryDetail() {
   const { id } = useParams();
@@ -14,6 +63,7 @@ export default function SharedLibraryDetail() {
   const [lib, setLib] = useState(null);
   const [allPdfs, setAllPdfs] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [renameFor, setRenameFor] = useState(null);
   const [q, setQ] = useState("");
   const mountedRef = useRef(false);
 
@@ -60,6 +110,13 @@ export default function SharedLibraryDetail() {
       const message = e.response?.data?.detail || "Errore aggiunta PDF";
       toast.error(message);
     }
+  };
+
+  const updateRenamedPdf = (updated) => {
+    setLib((current) => current ? {
+      ...current,
+      pdfs: (current.pdfs || []).map((pdf) => pdf.id === updated.id ? updated : pdf),
+    } : current);
   };
   
   const removePdf = async (pdfId) => {
@@ -158,13 +215,24 @@ export default function SharedLibraryDetail() {
         {(lib.pdfs || []).length === 0 && <li className="py-12 text-center text-muted2 text-sm italic">Questa libreria è vuota.</li>}
         {(lib.pdfs || []).map((p) => (
           <li key={p.id} className="group relative flex items-center justify-between gap-4 py-4 border-b border-rule hover:bg-canvas2 px-2 -mx-2 transition-colors">
-            <button onClick={() => navigate(`/viewer/${p.id}`)} className="text-left flex-1 flex items-center gap-4 min-w-0 pr-12 md:pr-14">
+            <div
+              className="text-left flex-1 flex items-center gap-4 min-w-0 pr-12 md:pr-14 cursor-pointer"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/viewer/${p.id}`)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") navigate(`/viewer/${p.id}`);
+              }}
+            >
               <FileText size={20} strokeWidth={1.5} className="text-muted2 shrink-0" />
               <div className="min-w-0">
-                <div className="font-display font-bold text-lg group-hover:underline decoration-2 underline-offset-4 truncate">{p.title}</div>
+                <EditableTitle
+                  title={p.title}
+                  onEdit={canManageLibrary && (user?.is_admin || p.owner_id === user?.user_id) ? () => setRenameFor(p) : undefined}
+                />
                 <div className="text-mono text-xs text-muted3 mt-0.5">{p.created_at?.slice(0, 10)} — {p.pages} pagine — {(p.size / 1024).toFixed(0)} KB</div>
               </div>
-            </button>
+            </div>
             {canManageLibrary && (
               <button
                 onClick={() => removePdf(p.id)}
@@ -187,6 +255,7 @@ export default function SharedLibraryDetail() {
           onAdd={addPdfs}
         />
       )}
+      {renameFor && <RenamePdfModal pdf={renameFor} onClose={() => setRenameFor(null)} onRename={updateRenamedPdf} />}
     </div>
   );
 }

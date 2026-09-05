@@ -200,6 +200,17 @@ def upload_to_drive(refresh_token: str, folder_id: str, filename: str, data: byt
     return f["id"]
 
 
+def rename_drive_file(refresh_token: str, file_id: str, new_name: str) -> bool:
+    """Rename an existing Drive file and report whether the update succeeded."""
+    try:
+        svc = _drive_service(refresh_token)
+        svc.files().update(fileId=file_id, body={"name": new_name}, fields="id,name").execute()
+        return True
+    except Exception as exc:
+        logger.warning("Drive rename failed for %s: %s", file_id, exc)
+        return False
+
+
 def download_from_drive(refresh_token: str, file_id: str) -> bytes:
     """Download a Drive file by ID. Returns bytes."""
     svc = _drive_service(refresh_token)
