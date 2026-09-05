@@ -82,7 +82,7 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://scorelib.vercel.app").rst
 BACKEND_CORS_ORIGINS = [origin.strip() for origin in os.environ.get("BACKEND_CORS_ORIGINS", "").split(",") if origin.strip()]
 FORMSUBMIT_BASE_URL = os.environ.get("FORMSUBMIT_BASE_URL", "https://formsubmit.co").strip()
 FORM_SUBMIT_DEST_EMAIL = os.environ.get("FORM_SUBMIT_DEST_EMAIL", EMAIL_FROM_ADDRESS).strip()
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 
 
 def get_admin_password() -> Optional[str]:
@@ -1213,29 +1213,10 @@ async def get_upload_policy(user_id: str = Depends(get_current_user_id)):
         "message": None if can_upload else "Attendi che finisca l'elaborazione in corso prima di caricare un altro PDF.",
     }
 
-def create_stripe_checkout_session(payload: Optional[dict] = None) -> dict:
-    redirect_base_url = (payload or {}).get("redirect_base_url") or FRONTEND_URL or "http://localhost:3000"
-    if not STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=503, detail="Configurazione mancante: imposta STRIPE_SECRET_KEY per abilitare il checkout.")
-    try:
-        import stripe
-    except ImportError as exc:
-        raise HTTPException(status_code=503, detail="Modulo Stripe non disponibile nel backend.") from exc
-    stripe.api_key = STRIPE_SECRET_KEY
-    base = redirect_base_url.rstrip("/")
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        line_items=[{"price_data": {"currency": "eur", "unit_amount": 300, "product_data": {"name": "Caffè per Scorelib"}}, "quantity": 1}],
-        success_url=f"{base}/support/thanks?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base}/",
-        metadata={"source": "scorelib_donation"},
-    )
-    return {"checkout_url": session.url}
+@api.get("/support/info")
+async def support_info():
+    return {"email": SUPPORT_EMAIL}
 
-
-@api.post("/payments/checkout")
-async def payments_checkout(payload: Optional[dict] = None):
-    return create_stripe_checkout_session(payload)
 
 @api.get("/pdfs/{pdf_id}/status")
 async def get_pdf_status(pdf_id: str, user_id: str = Depends(get_current_user_id)):

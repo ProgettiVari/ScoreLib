@@ -30,6 +30,6 @@ services:
         sync: false
       - key: GOOGLE_APPLICATION_CREDENTIALS
         sync: false
-      - key: STRIPE_SECRET_KEY
+      - key: SUPPORT_EMAIL
         sync: false
 

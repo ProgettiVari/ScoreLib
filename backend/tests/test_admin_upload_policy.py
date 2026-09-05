@@ -151,14 +151,4 @@ def test_gemini_daily_quota_available_false_when_all_keys_exhausted(monkeypatch)
     assert pdf_processor.gemini_daily_quota_available() is False
 
 
-def test_create_stripe_checkout_requires_secret_key(monkeypatch):
-    import server
 
-    monkeypatch.setattr(server, "STRIPE_SECRET_KEY", "")
-
-    try:
-        server.create_stripe_checkout_session({"redirect_base_url": "https://example.test"})
-        assert False, "expected an HTTPException when the Stripe secret key is missing"
-    except server.HTTPException as exc:
-        assert exc.status_code == 503
-        assert "STRIPE_SECRET_KEY" in exc.detail

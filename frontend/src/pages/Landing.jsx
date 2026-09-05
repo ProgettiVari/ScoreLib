@@ -4,6 +4,7 @@ import { Search, UploadCloud, Share2, BookOpen, ArrowRight, Coffee } from "lucid
 import TrebleClef from "@/components/TrebleClef";
 import { applyThemeSetting, resolveInitialTheme } from "@/lib/theme";
 import api from "@/lib/api";
+import CoffeeSupportModal from "@/components/CoffeeSupportModal";
 
 const FEATURES = [
   {
@@ -36,6 +37,9 @@ const STEPS = [
 
 export default function Landing() {
   const [theme, setTheme] = useState(() => resolveInitialTheme());
+  const [coffeeOpen, setCoffeeOpen] = useState(false);
+  const [supportEmail, setSupportEmail] = useState(null);
+  const [supportEmailLoading, setSupportEmailLoading] = useState(false);
 
   useEffect(() => {
     applyThemeSetting(theme);
@@ -44,15 +48,16 @@ export default function Landing() {
   }, [theme]);
 
   const handleCoffee = async () => {
+    setCoffeeOpen(true);
+    if (supportEmail !== null) return;
+    setSupportEmailLoading(true);
     try {
-      const redirectBase = window.location.origin;
-      const { data } = await api.post("/payments/checkout", { redirect_base_url: redirectBase });
-      if (data?.checkout_url) {
-        window.location.href = data.checkout_url;
-      }
-    } catch (e) {
-      const detail = e.response?.data?.detail || "Impossibile avviare il checkout.";
-      window.alert(detail);
+      const { data } = await api.get("/support/info");
+      setSupportEmail(data?.email || "");
+    } catch (error) {
+      setSupportEmail("");
+    } finally {
+      setSupportEmailLoading(false);
     }
   };
 
@@ -199,6 +204,12 @@ export default function Landing() {
           <span>© {new Date().getFullYear()} Scorelib</span>
         </div>
       </footer>
+      <CoffeeSupportModal
+        open={coffeeOpen}
+        onClose={() => setCoffeeOpen(false)}
+        email={supportEmail}
+        loading={supportEmailLoading}
+      />
     </div>
   );
 }

@@ -112,4 +112,3 @@ yarl==1.23.0
 zipp==3.23.1
 psutil
 aiofiles
-stripe==12.0.0
