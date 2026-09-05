@@ -81,7 +81,7 @@ export default function Landing() {
               <span
                 className={`inline-block h-6 w-6 rounded-full bg-ink text-white flex items-center justify-center transition-transform ${theme === "dark" ? "translate-x-6" : "translate-x-0"}`}
               >
-                {theme === "dark" ? <Moon size={12} aria-hidden="true" /> : <Sun size={12} aria-hidden="true" />}
+                {theme === "dark" ? <Moon size={12} className="text-black" aria-hidden="true" /> : <Sun size={12} aria-hidden="true" />}
               </span>
             </button>
             <button type="button" onClick={handleCoffee} className="btn-ghost gap-2"><Coffee size={15} /> Offrimi un caffè</button>
