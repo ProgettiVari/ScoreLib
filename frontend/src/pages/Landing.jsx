@@ -1,7 +1,9 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, UploadCloud, Share2, BookOpen, ArrowRight } from "lucide-react";
+import { Search, UploadCloud, Share2, BookOpen, ArrowRight, Coffee } from "lucide-react";
 import TrebleClef from "@/components/TrebleClef";
+import { applyThemeSetting, resolveInitialTheme } from "@/lib/theme";
+import api from "@/lib/api";
 
 const FEATURES = [
   {
@@ -33,6 +35,27 @@ const STEPS = [
 ];
 
 export default function Landing() {
+  const [theme, setTheme] = useState(() => resolveInitialTheme());
+
+  useEffect(() => {
+    applyThemeSetting(theme);
+    localStorage.setItem("theme", theme);
+    window.dispatchEvent(new Event("theme-change"));
+  }, [theme]);
+
+  const handleCoffee = async () => {
+    try {
+      const redirectBase = window.location.origin;
+      const { data } = await api.post("/payments/checkout", { redirect_base_url: redirectBase });
+      if (data?.checkout_url) {
+        window.location.href = data.checkout_url;
+      }
+    } catch (e) {
+      const detail = e.response?.data?.detail || "Impossibile avviare il checkout.";
+      window.alert(detail);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-canvas">
       <header className="sticky top-0 z-20 bg-canvas/90 backdrop-blur border-b border-rule">
@@ -41,7 +64,24 @@ export default function Landing() {
             <TrebleClef size={26} />
             <span className="font-display font-bold text-xl tracking-tight">Scorelib</span>
           </div>
-          <Link to="/login" className="btn-ghost">Accedi</Link>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label="Cambia tema landing"
+              onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+              className="relative inline-flex h-8 w-14 items-center rounded-full border border-rule bg-canvas2 p-1 transition-colors"
+            >
+              <span className="absolute left-2 text-[10px]">♪</span>
+              <span className="absolute right-2 text-[10px]">♭</span>
+              <span
+                className={`inline-block h-6 w-6 rounded-full bg-ink text-[10px] text-white flex items-center justify-center transition-transform ${theme === "dark" ? "translate-x-6" : "translate-x-0"}`}
+              >
+                {theme === "dark" ? "♭" : "♪"}
+              </span>
+            </button>
+            <button type="button" onClick={handleCoffee} className="btn-ghost gap-2"><Coffee size={15} /> ☕ Offrimi un caffè</button>
+            <Link to="/login" className="btn-ghost">Accedi</Link>
+          </div>
         </div>
       </header>
 

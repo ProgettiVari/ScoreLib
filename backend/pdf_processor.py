@@ -188,6 +188,17 @@ def get_gemini_admin_status() -> Dict[str, Any]:
     }
 
 
+def gemini_daily_quota_available() -> bool:
+    """Return True when at least one Gemini key is still available for the current day."""
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    if not keys:
+        return False
+    with _GEMINI_KEY_STATS_LOCK:
+        _roll_gemini_day_if_needed()
+    exhausted = {key for key in keys if key and key in _GEMINI_EXHAUSTED_KEYS}
+    return any(key not in exhausted for key in keys if key)
+
+
 class GeminiQuotaExceeded(RuntimeError):
     """Raised when Gemini returns a daily quota exhaustion signal instead of a temporary rate-limit retry."""
 
@@ -1618,17 +1629,20 @@ def _extract_text_with_rapidocr(page, timings: Dict[str, Any] = None) -> str:
     render_time = 0.0
     infer_time = 0.0
     try:
-        import numpy as np
-        from PIL import Image
+        try:
+            import numpy as np
+        except Exception:
+            np = None
 
         start = time.perf_counter()
         pix = page.get_pixmap(alpha=False, dpi=300)
         render_time += time.perf_counter() - start
 
         try:
+            from PIL import Image
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             img = _resize_image_for_ocr(img, max_long_side=2000)
-            arr = np.asarray(img)
+            arr = np.asarray(img) if np is not None else img
         except Exception:
             arr = pix
         engine = _create_rapidocr_engine()
@@ -2048,7 +2062,7 @@ def _sufficient_ocr_text(text: str, min_words: int = FAST_OCR_WORD_THRESHOLD) ->
     if not cleaned:
         return len(raw_words) >= 2
 
-    if _is_noisy_page_text(cleaned):
+    if len(raw_words) >= 6 and _is_noisy_page_text(cleaned):
         return False
 
     return True
@@ -2068,10 +2082,13 @@ def _is_probably_blank_page(page, cleaned_text: str = "") -> bool:
     This is intentionally conservative: pages with any text blocks or visible image content
     are kept available for OCR/Gemini rather than being treated as blank.
     """
-    text = cleaned_text or (page.get_text("text") or "") if page is not None else ""
+    try:
+        native_text = page.get_text("text") if page is not None else ""
+    except Exception:
+        native_text = ""
+    text = cleaned_text or native_text or ""
     cleaned = clean_pdf_text(text)
     word_count = _count_text_words(cleaned)
-
     try:
         text_dict = page.get_text("dict") or {}
     except Exception:

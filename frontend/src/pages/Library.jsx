@@ -1,11 +1,66 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Pencil, Lock, Unlock } from "lucide-react";
+import { Trash2, FileText, Upload as UploadIcon, Star, Tag as TagIcon, Pencil, Lock, Unlock, X } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import UploadModal from "@/components/UploadModal";
 import TagEditor from "@/components/TagEditor";
+
+function RenamePdfModal({ pdf, onClose, onRename }) {
+  const [title, setTitle] = useState(pdf?.title || "");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const save = async () => {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      toast.error("Il titolo non può essere vuoto");
+      return;
+    }
+    try {
+      const r = await api.patch(`/pdfs/${pdf.id}`, { title: nextTitle });
+      onRename(r.data);
+      onClose();
+    } catch (e) {
+      const message = e.response?.data?.detail || "Errore rinomina PDF";
+      toast.error(message);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-overlay flex items-center justify-center p-4" onClick={onClose} data-testid="rename-pdf-modal">
+      <div className="bg-card border border-rule rounded-md w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-display text-xl font-bold tracking-tight">Rinomina PDF</h2>
+          <button onClick={onClose} className="btn-ghost"><X size={16} /></button>
+        </div>
+        <label className="block text-sm text-muted2 mb-2">Titolo</label>
+        <input
+          ref={inputRef}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="input-base w-full mb-4"
+          placeholder="Inserisci un nuovo titolo"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              save();
+            }
+          }}
+        />
+        <div className="flex justify-end gap-2 pt-2 border-t border-rule">
+          <button onClick={onClose} className="btn-ghost border border-rule rounded-sm px-4 py-2">Annulla</button>
+          <button onClick={save} className="btn-primary">Salva</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Library() {
   const [items, setItems] = useState([]);
@@ -15,6 +70,7 @@ export default function Library() {
   const [tagFilter, setTagFilter] = useState("");
   const [openUpload, setOpenUpload] = useState(false);
   const [editTagsFor, setEditTagsFor] = useState(null);
+  const [renameFor, setRenameFor] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const loadSeq = useRef(0);
@@ -283,10 +339,10 @@ export default function Library() {
                 </div>
               </button>
               <button
-                onClick={() => setEditTagsFor(p)}
+                onClick={() => setRenameFor(p)}
                 className="btn-ghost shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
-                title="Modifica tag"
-                aria-label={`Modifica tag per ${p.title}`}
+                title="Rinomina PDF"
+                aria-label={`Rinomina ${p.title}`}
               >
                 <Pencil size={14} />
               </button>
@@ -309,6 +365,7 @@ export default function Library() {
       )}
 
       <UploadModal open={openUpload} onClose={() => setOpenUpload(false)} onComplete={load} />
+      {renameFor && <RenamePdfModal pdf={renameFor} onClose={() => setRenameFor(null)} onRename={updateItem} />}
       {editTagsFor && <TagEditor pdf={editTagsFor} onClose={() => setEditTagsFor(null)} onUpdate={updateItem} />}
     </div>
   );

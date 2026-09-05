@@ -137,3 +137,28 @@ def test_unban_access_updates_request_user_and_logs(monkeypatch):
     assert fake_db.access_requests.update[1]["$set"]["status"] == "pending"
     assert fake_db.users.update[0] == {"email": "user@example.com"}
     assert fake_db.app_logs.docs[0]["event_type"] == "access.unbanned"
+
+
+def test_gemini_daily_quota_available_false_when_all_keys_exhausted(monkeypatch):
+    import pdf_processor
+
+    monkeypatch.setattr(pdf_processor, "GEMINI_API_KEYS", ["key_1"])
+    monkeypatch.setattr(pdf_processor, "GEMINI_API_KEY", "key_1")
+    monkeypatch.setattr(pdf_processor, "_GEMINI_EXHAUSTED_KEYS", {"key_1"})
+    monkeypatch.setattr(pdf_processor, "_GEMINI_KEY_STATS", {})
+    monkeypatch.setattr(pdf_processor, "_GEMINI_ACTIVE_DAY", pdf_processor._gemini_state_day())
+
+    assert pdf_processor.gemini_daily_quota_available() is False
+
+
+def test_create_stripe_checkout_requires_secret_key(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server, "STRIPE_SECRET_KEY", "")
+
+    try:
+        server.create_stripe_checkout_session({"redirect_base_url": "https://example.test"})
+        assert False, "expected an HTTPException when the Stripe secret key is missing"
+    except server.HTTPException as exc:
+        assert exc.status_code == 503
+        assert "STRIPE_SECRET_KEY" in exc.detail

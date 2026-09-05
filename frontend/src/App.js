@@ -22,6 +22,8 @@ import SharedLibraryDetail from "@/pages/SharedLibraryDetail";
 import AdminLogs from "@/pages/AdminLogs";
 import Admin from "@/pages/Admin";
 import { shouldHideAppChrome } from "@/viewer/viewerChrome";
+import { applyThemeSetting, resolveInitialTheme } from "@/lib/theme";
+import SupportThanks from "@/pages/SupportThanks";
 
 function GoogleOAuthReturn() {
   const navigate = useNavigate();
@@ -128,35 +130,13 @@ function AppShell() {
         <Route path="/libraries/:id" element={<ProtectedRoute><SharedLibraryDetail /></ProtectedRoute>} />
         <Route path="/shared/:token" element={<SharedView />} />
         <Route path="/viewer/:id" element={<PdfViewer />} />
+        <Route path="/support/thanks" element={<SupportThanks />} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/logs" element={<ProtectedRoute><AdminLogs /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
       </Routes>
     </ChromeWrapper>
   );
-}
-
-function applyThemeSetting(theme) {
-  const root = document.documentElement;
-  if (theme === "dark") {
-    root.classList.add("dark");
-    root.style.colorScheme = "dark";
-  } else if (theme === "light") {
-    root.classList.remove("dark");
-    root.style.colorScheme = "light";
-  } else {
-    const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    root.classList.toggle("dark", isDark);
-    root.style.colorScheme = isDark ? "dark" : "light";
-  }
-}
-
-function resolveInitialTheme() {
-  const stored = localStorage.getItem("theme");
-  if (stored && ["light", "dark", "system"].includes(stored)) {
-    return stored;
-  }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 export default function App() {

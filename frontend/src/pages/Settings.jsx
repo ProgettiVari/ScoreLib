@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Moon, Sun, Monitor, Cloud, RefreshCw, Users, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { applyThemeSetting, resolveInitialTheme } from "@/lib/theme";
 import { useAuth } from "@/context/AuthContext";
 
 export default function Settings() {
@@ -9,11 +10,7 @@ export default function Settings() {
   const [backup, setBackup] = useState(null);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [theme, setTheme] = useState(() => {
-    const stored = localStorage.getItem("theme");
-    if (stored && ["light", "dark", "system"].includes(stored)) return stored;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
+  const [theme, setTheme] = useState(() => resolveInitialTheme());
 
   const isAdmin = user?.is_admin;
 
@@ -42,19 +39,7 @@ export default function Settings() {
   const changeTheme = (t) => {
     setTheme(t);
     localStorage.setItem("theme", t);
-    const root = document.documentElement;
-    if (t === "dark") {
-      root.classList.add("dark");
-      root.style.colorScheme = "dark";
-    } else if (t === "light") {
-      root.classList.remove("dark");
-      root.style.colorScheme = "light";
-    } else {
-      const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      root.classList.toggle("dark", isDark);
-      root.style.colorScheme = isDark ? "dark" : "light";
-    }
-    // Dispatch event to notify other components if needed
+    applyThemeSetting(t);
     window.dispatchEvent(new Event("theme-change"));
   };
 
