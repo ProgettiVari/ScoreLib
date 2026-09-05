@@ -5,8 +5,6 @@ import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import AuthShell from "@/components/AuthShell";
 
-const ADMIN_EMAIL = process.env.REACT_APP_ADMIN_EMAIL?.toLowerCase() || "admin@scorelib.app";
-
 export default function Login() {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -24,7 +22,6 @@ export default function Login() {
   const { loginWithToken } = useAuth();
 
   const normalizedEmail = email.toLowerCase().trim();
-  const isAdminEmail = normalizedEmail === ADMIN_EMAIL;
 
   useEffect(() => {
     if (!cooldownUntil) return;
@@ -42,13 +39,6 @@ export default function Login() {
     return () => clearInterval(interval);
   }, [cooldownUntil]);
 
-  useEffect(() => {
-    if (!isAdminEmail) {
-      setPassword("");
-      setShowPassword(false);
-    }
-  }, [isAdminEmail]);
-
   const completeLogin = (data) => {
     loginWithToken(data.token, data.user);
     let from = location.state?.from || "/";
@@ -65,18 +55,10 @@ export default function Login() {
       return;
     }
 
-    if (isAdminEmail && !password) {
-      setShowPassword(true);
-      toast.error("Password richiesta per accesso admin.");
-      return;
-    }
-
     setBusy(true);
     try {
       const payload = { email: normalizedEmail };
-      if (isAdminEmail) {
-        payload.password = password;
-      }
+      if (password.trim()) payload.password = password;
 
       const res = await api.post("/auth/login", payload);
       const data = res?.data ?? {};
@@ -242,6 +224,16 @@ export default function Login() {
                 className="input-base" placeholder="********"
               />
             </div>
+          )}
+
+          {!showPassword && (
+            <button
+              type="button"
+              onClick={() => setShowPassword(true)}
+              className="text-sm text-ink hover:underline font-medium"
+            >
+              Accedi con password
+            </button>
           )}
 
           <button

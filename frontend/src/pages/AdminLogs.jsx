@@ -4,8 +4,6 @@ import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
-const ADMIN_EMAIL = "admin@scorelib.app";
-
 function levelColor(level) {
   if (level === "error") return "text-red-600 border-red-300 bg-red-50";
   if (level === "warn") return "text-amber-700 border-amber-300 bg-amber-50";
@@ -14,7 +12,7 @@ function levelColor(level) {
 
 export default function AdminLogs() {
   const { user } = useAuth();
-  const isAdmin = user?.email?.toLowerCase() === ADMIN_EMAIL || user?.is_admin;
+  const isAdmin = user?.is_admin;
   const [items, setItems] = useState([]);
   const [types, setTypes] = useState([]);
   const [filterType, setFilterType] = useState("all");
