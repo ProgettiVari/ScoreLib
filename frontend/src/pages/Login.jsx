@@ -210,7 +210,11 @@ export default function Login() {
             <label className="overline block mb-2">Email</label>
             <input
               type="email" required value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setPassword("");
+                setShowPassword(false);
+              }}
               className="input-base" placeholder="tu@esempio.com"
             />
           </div>
